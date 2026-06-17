@@ -228,7 +228,7 @@ export class GameRoom extends Room<GameState> {
       let player: Player | undefined;
       let playerKey: string | undefined;
 
-      if (this.isSoloMode && this.isPlatformManaged && message.targetColor) {
+      if (this.isSoloMode && message.targetColor) {
         // Find the player with the requested color
         this.state.players.forEach((p, key) => {
           if (p.color === message.targetColor) {
