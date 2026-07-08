@@ -8,6 +8,8 @@ import { Bloom, EffectComposer } from "@react-three/postprocessing";
 import * as THREE from "three";
 import { Player } from "@/components/Player";
 import { ParticleFloor } from "@/components/ParticleFloor";
+import { Mine } from "@/components/Mine";
+import { MineBurst } from "@/components/MineBurst";
 
 import { CubeFrame } from "@/components/CubeFrame";
 import { Hand } from "@/components/Hand";
@@ -74,6 +76,22 @@ interface EnemyState {
   y: number;
   id: string;
   personality: string;
+}
+
+interface VisibleMine {
+  id: string;
+  x: number;
+  y: number;
+  ownerColor: PlayerColor;
+  triggered: boolean;
+}
+
+interface MineBurstEvent {
+  id: string;
+  x: number;
+  y: number;
+  ownerColor: PlayerColor;
+  timestamp: number;
 }
 
 interface Ping {
@@ -374,6 +392,10 @@ interface GameScreenProps {
   gridColors: Map<string, PlayerColor>;
   collectibles: Collectible[];
   enemies: EnemyState[];
+  visibleMines: VisibleMine[];
+  visibleMinesByColor: Record<PlayerColor, VisibleMine[]>;
+  mineBursts: MineBurstEvent[];
+  onMineBurstComplete: (id: string) => void;
   gridWidth: number;
   gridHeight: number;
   myColor: PlayerColor | null;
@@ -477,6 +499,10 @@ export const GameScreen = ({
   gridColors,
   collectibles,
   enemies,
+  visibleMines,
+  visibleMinesByColor,
+  mineBursts,
+  onMineBurstComplete,
   gridWidth,
   gridHeight,
   myColor,
@@ -586,6 +612,16 @@ export const GameScreen = ({
     id: string;
   } | null>(null);
   const prevTotalScoreRef = useRef(totalScore);
+  const currentVisibleMines = useMemo(() => {
+    if (!isSoloMode) return visibleMines;
+    const playerArray = Array.from(players.values());
+    const activeColor = playerArray[activePlayerIndex]?.color;
+    return activeColor ? visibleMinesByColor[activeColor] : [];
+  }, [activePlayerIndex, isSoloMode, players, visibleMines, visibleMinesByColor]);
+
+  useEffect(() => {
+    console.log(`Current visible mines: ${currentVisibleMines.length}`);
+  }, [currentVisibleMines]);
 
   const currentStageThreshold = stage < 8 && stageThresholds.length > 0
     ? stageThresholds[stage - 1]
@@ -2233,6 +2269,27 @@ export const GameScreen = ({
 
               return null;
             })}
+
+            {/* Mines */}
+            {currentVisibleMines.map((mine) => {
+              const pos = getVisualPos(mine.x, mine.y, -1.95);
+              return (
+                <group key={mine.id} position={pos}>
+                  <Mine color={getDisplayColor(mine.ownerColor)} triggered={mine.triggered} />
+                </group>
+              );
+            })}
+
+            {/* Mine Trigger Bursts */}
+            {mineBursts.map((burst) => (
+              <MineBurst
+                key={burst.id}
+                color={getDisplayColor(burst.ownerColor)}
+                position={getVisualPos(burst.x, burst.y, -1.82)}
+                timestamp={burst.timestamp}
+                onComplete={() => onMineBurstComplete(burst.id)}
+              />
+            ))}
 
             {/* Floating Score Animations */}
             {floatingScores.map((fs) => (

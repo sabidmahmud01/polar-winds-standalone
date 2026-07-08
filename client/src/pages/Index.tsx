@@ -65,6 +65,22 @@ interface EnemyState {
   personality: EnemyPersonality;
 }
 
+interface VisibleMine {
+  id: string;
+  x: number;
+  y: number;
+  ownerColor: PlayerColor;
+  triggered: boolean;
+}
+
+interface MineBurstEvent {
+  id: string;
+  x: number;
+  y: number;
+  ownerColor: PlayerColor;
+  timestamp: number;
+}
+
 interface ServerGameState {
   players: Map<string, PlayerState>;
   gridColors: Map<string, { color: PlayerColor }>;
@@ -192,6 +208,13 @@ const Index = () => {
   const [voiceToken, setVoiceToken] = useState<string | null>(null);
   const [livekitUrl, setLivekitUrl] = useState<string | null>(null);
   const [voiceColorMap, setVoiceColorMap] = useState<Record<string, string>>({});
+  const [visibleMines, setVisibleMines] = useState<VisibleMine[]>([]);
+  const [visibleMinesByColor, setVisibleMinesByColor] = useState<Record<PlayerColor, VisibleMine[]>>({
+    RED: [],
+    GREEN: [],
+    BLUE: [],
+  });
+  const [mineBursts, setMineBursts] = useState<MineBurstEvent[]>([]);
   const isMultiplayer = initPayload ? !initPayload.soloMode : false;
   const isSpectator = initPayload?.spectator ?? false;
   const micEnabled = localStorage.getItem("pw-mic-skipped") !== "true";
@@ -345,6 +368,49 @@ const Index = () => {
         if (message.playerColors) {
           setVoiceColorMap(message.playerColors);
         }
+      });
+
+      gameRoom.onMessage("visibleMines", (message: { mines: VisibleMine[] }) => {
+        setVisibleMines(message.mines);
+        console.log(`Received ${message.mines.length} visible mines`);
+      });
+
+      gameRoom.onMessage("visibleMinesByColor", (message: { minesByColor: Record<PlayerColor, VisibleMine[]> }) => {
+        setVisibleMinesByColor(message.minesByColor);
+        console.log("Received solo mine views", {
+          RED: message.minesByColor.RED.length,
+          GREEN: message.minesByColor.GREEN.length,
+          BLUE: message.minesByColor.BLUE.length,
+        });
+      });
+
+      gameRoom.onMessage("mineTriggered", (message: { id: string; x: number; y: number; ownerColor: PlayerColor; teamPenalty: number; totalTeamPenalty: number; penaltyCapReached?: boolean }) => {
+        console.log("Mine triggered", message);
+        playSound("mine");
+        setMineBursts((prev) => [
+          ...prev,
+          {
+            id: `${message.id}-${Date.now()}`,
+            x: message.x,
+            y: message.y,
+            ownerColor: message.ownerColor,
+            timestamp: Date.now(),
+          },
+        ].slice(-8));
+        toast.warning(
+          message.penaltyCapReached
+            ? `${message.ownerColor} mine triggered: penalty cap reached`
+            : `${message.ownerColor} mine triggered: team -${message.teamPenalty}`
+        );
+      });
+
+      gameRoom.onMessage("mineResolved", (message: { id: string; x: number; y: number; ownerColor: PlayerColor; claimedByColor: PlayerColor; teamRefund: number; totalTeamPenalty: number; removed?: boolean }) => {
+        console.log("Mine resolved", message);
+        toast.success(
+          message.teamRefund > 0
+            ? `${message.claimedByColor} recovered ${message.ownerColor} mine: team +${message.teamRefund}`
+            : `${message.claimedByColor} stabilized ${message.ownerColor} mine`
+        );
       });
 
       gameRoom.onMessage(
@@ -593,6 +659,12 @@ const Index = () => {
         gridColors={gameState.gridColors}
         collectibles={gameState.collectibles}
         enemies={gameState.enemies}
+        visibleMines={visibleMines}
+        visibleMinesByColor={visibleMinesByColor}
+        mineBursts={mineBursts}
+        onMineBurstComplete={(id) => {
+          setMineBursts((prev) => prev.filter((burst) => burst.id !== id));
+        }}
         gridWidth={gameState.gridWidth}
         gridHeight={gameState.gridHeight}
         myColor={myColor}

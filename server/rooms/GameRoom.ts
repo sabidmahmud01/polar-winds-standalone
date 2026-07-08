@@ -50,6 +50,23 @@ interface ClearBoardVote {
   timestamp: number;
 }
 
+interface Mine {
+  id: string;
+  x: number;
+  y: number;
+  ownerColor: PlayerColor;
+  triggered: boolean;
+  penaltyApplied: boolean;
+}
+
+interface VisibleMine {
+  id: string;
+  x: number;
+  y: number;
+  ownerColor: PlayerColor;
+  triggered: boolean;
+}
+
 export class GameRoom extends Room<GameState> {
   maxClients = 10;
   private playerColors: PlayerColor[] = ["RED", "GREEN", "BLUE"];
@@ -58,6 +75,10 @@ export class GameRoom extends Room<GameState> {
   private readonly MAX_GRID_SIZE = 26; // Full grid size (stage 8)
   private readonly INITIAL_VISIBLE_WIDTH = 10; // Starting visible width (stage 1)
   private readonly INITIAL_VISIBLE_HEIGHT = 8; // Starting visible height (stage 1)
+  private readonly MINES_PER_COLOR = 3;
+  private readonly MINE_TEAM_PENALTY = 5;
+  private readonly MAX_ACTIVE_MINE_PENALTIES = 3;
+  private readonly MINE_BLAST_RADIUS = 1;
   private rng: SeededRNG;       // clue/collectible placement only
   private enemyRng: SeededRNG;  // enemy spawning & movement only
   private collectibleSpawnConfig: CollectibleSpawnConfig;
@@ -91,6 +112,8 @@ export class GameRoom extends Room<GameState> {
   private milestoneReportedTypes = new Set<string>();
   private pendingMilestoneRequests: Promise<void>[] = [];
   private countdownTimer: ReturnType<typeof setInterval> | null = null;
+  private mines: Mine[] = [];
+  private mineTeamPenaltyTotal = 0;
 
   onCreate(options: any) {
     console.log("GameRoom created with options:", options, "| Room ID:", this.roomId);
@@ -294,6 +317,7 @@ export class GameRoom extends Room<GameState> {
           this.state.gridColors.set(cellKey, cell);
         }
         cell.color = player.color;
+        this.updateMineOwnershipAt(newX, newY, player.color);
 
         // Recalculate scores
         this.calculateScores();
@@ -357,6 +381,9 @@ export class GameRoom extends Room<GameState> {
 
       // Set the color
       cell.color = color as any;
+      if (color === "RED" || color === "GREEN" || color === "BLUE") {
+        this.updateMineOwnershipAt(x, y, color);
+      }
 
       // Recalculate scores
       this.calculateScores();
@@ -656,6 +683,10 @@ export class GameRoom extends Room<GameState> {
         }
       }
 
+      if (this.state.gameStarted) {
+        this.sendVisibleMinesToClient(client);
+      }
+
       return;
     }
 
@@ -861,6 +892,8 @@ export class GameRoom extends Room<GameState> {
 
     // Generate initial collectibles
     this.generateInitialCollectibles();
+    this.generateInitialMines();
+    this.sendVisibleMinesToAllPlayers();
     this.calculateScores();
 
     // Spawn initial enemies from config (if any enemy rules exist)
@@ -1174,6 +1207,134 @@ export class GameRoom extends Room<GameState> {
     console.log(`Generated ${this.state.collectibles.length} initial collectibles`);
   }
 
+  private generateInitialMines() {
+    this.mines = [];
+
+    const colors: PlayerColor[] = ["RED", "GREEN", "BLUE"];
+    const center = Math.floor(this.MAX_GRID_SIZE / 2);
+    const halfWidth = Math.floor(this.state.gridWidth / 2);
+    const halfHeight = Math.floor(this.state.gridHeight / 2);
+    const minX = center - halfWidth;
+    const minY = center - halfHeight;
+
+    for (const ownerColor of colors) {
+      for (let i = 0; i < this.MINES_PER_COLOR; i++) {
+        let x = minX;
+        let y = minY;
+        let attempts = 0;
+
+        do {
+          x = minX + Math.floor(this.rng.next() * this.state.gridWidth);
+          y = minY + Math.floor(this.rng.next() * this.state.gridHeight);
+          attempts++;
+        } while ((this.isPositionOccupied(x, y) || this.isMinePositionOccupied(x, y)) && attempts < 100);
+
+        this.mines.push({
+          id: `${ownerColor}-mine-${i}`,
+          x,
+          y,
+          ownerColor,
+          triggered: false,
+          penaltyApplied: false,
+        });
+      }
+    }
+
+    console.log(`Generated ${this.mines.length} private mines`);
+  }
+
+  private getVisibleMinesForColor(playerColor: PlayerColor): VisibleMine[] {
+    return this.mines
+      .filter((mine) => mine.ownerColor !== playerColor)
+      .map((mine) => ({
+        id: mine.id,
+        x: mine.x,
+        y: mine.y,
+        ownerColor: mine.ownerColor,
+        triggered: mine.triggered,
+      }));
+  }
+
+  private sendVisibleMinesToClient(client: Client) {
+    const player = this.state.players.get(client.sessionId);
+    if (!player) return;
+
+    if (this.isSoloMode) {
+      const minesByColor: Record<PlayerColor, VisibleMine[]> = {
+        RED: this.getVisibleMinesForColor("RED"),
+        GREEN: this.getVisibleMinesForColor("GREEN"),
+        BLUE: this.getVisibleMinesForColor("BLUE"),
+      };
+      client.send("visibleMinesByColor", { minesByColor });
+      console.log("Sent solo mine views for RED, GREEN, and BLUE");
+      return;
+    }
+
+    const mines = this.getVisibleMinesForColor(player.color);
+    client.send("visibleMines", { mines });
+    console.log(`Sent ${mines.length} visible mines to ${player.color} player`);
+  }
+
+  private sendVisibleMinesToAllPlayers() {
+    for (const client of this.clients) {
+      this.sendVisibleMinesToClient(client);
+    }
+  }
+
+  private updateMineOwnershipAt(x: number, y: number, newOwnerColor: PlayerColor): Mine | null {
+    const mine = this.mines.find((candidate) => candidate.x === x && candidate.y === y);
+
+    if (!mine) return null;
+
+    if (mine.ownerColor === newOwnerColor && !mine.triggered) {
+      const activePenaltyCount = this.getActiveMinePenaltyCount();
+      const penaltyApplied = activePenaltyCount < this.MAX_ACTIVE_MINE_PENALTIES;
+      mine.triggered = true;
+      mine.penaltyApplied = penaltyApplied;
+      if (penaltyApplied) {
+        this.mineTeamPenaltyTotal += this.MINE_TEAM_PENALTY;
+      }
+      this.clearMineBlastArea(mine.x, mine.y);
+      this.broadcast("mineTriggered", {
+        id: mine.id,
+        x: mine.x,
+        y: mine.y,
+        ownerColor: mine.ownerColor,
+        teamPenalty: penaltyApplied ? this.MINE_TEAM_PENALTY : 0,
+        totalTeamPenalty: this.mineTeamPenaltyTotal,
+        penaltyCapReached: !penaltyApplied,
+        blastRadius: this.MINE_BLAST_RADIUS,
+      });
+      this.sendVisibleMinesToAllPlayers();
+      console.log(`Mine triggered: ${mine.id} at (${mine.x}, ${mine.y}); team penalty is now ${this.mineTeamPenaltyTotal}`);
+      return mine;
+    }
+
+    if (mine.ownerColor !== newOwnerColor && mine.triggered) {
+      const refundApplied = mine.penaltyApplied;
+      if (refundApplied) {
+        this.mineTeamPenaltyTotal = Math.max(0, this.mineTeamPenaltyTotal - this.MINE_TEAM_PENALTY);
+      }
+      mine.triggered = false;
+      mine.penaltyApplied = false;
+      this.broadcast("mineResolved", {
+        id: mine.id,
+        x: mine.x,
+        y: mine.y,
+        ownerColor: mine.ownerColor,
+        claimedByColor: newOwnerColor,
+        teamRefund: refundApplied ? this.MINE_TEAM_PENALTY : 0,
+        totalTeamPenalty: this.mineTeamPenaltyTotal,
+        removed: false,
+      });
+      this.sendVisibleMinesToAllPlayers();
+      console.log(`Mine resolved: ${mine.id} claimed by ${newOwnerColor}; team penalty is now ${this.mineTeamPenaltyTotal}`);
+      return mine;
+    }
+
+    return mine;
+  }
+
   private spawnCluesFromLevelSpec(stage: number) {
     if (!this.levelSpec) return;
 
@@ -1236,6 +1397,22 @@ export class GameRoom extends Room<GameState> {
     }
 
     return false;
+  }
+
+  private isMinePositionOccupied(x: number, y: number): boolean {
+    return this.mines.some((mine) => mine.x === x && mine.y === y);
+  }
+
+  private getActiveMinePenaltyCount(): number {
+    return this.mines.filter((mine) => mine.triggered && mine.penaltyApplied).length;
+  }
+
+  private clearMineBlastArea(centerX: number, centerY: number) {
+    for (let y = centerY - this.MINE_BLAST_RADIUS; y <= centerY + this.MINE_BLAST_RADIUS; y++) {
+      for (let x = centerX - this.MINE_BLAST_RADIUS; x <= centerX + this.MINE_BLAST_RADIUS; x++) {
+        this.state.gridColors.delete(`${x},${y}`);
+      }
+    }
   }
 
   private calculateScores() {
@@ -1308,7 +1485,8 @@ export class GameRoom extends Room<GameState> {
     }
 
     // Update state (skip unchanged map entries to shrink encoded patches)
-    const nextTotal = scores.RED + scores.GREEN + scores.BLUE;
+    const baseTotal = scores.RED + scores.GREEN + scores.BLUE;
+    const nextTotal = Math.max(0, baseTotal - this.mineTeamPenaltyTotal);
     if (this.state.scores.get("RED") !== scores.RED) {
       this.state.scores.set("RED", scores.RED);
     }
