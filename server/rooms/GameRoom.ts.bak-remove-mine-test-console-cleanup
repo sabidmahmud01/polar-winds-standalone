@@ -343,88 +343,45 @@ export class GameRoom extends Room<GameState> {
     });
 
     // Handle dev mode stage up
-    this.onMessage("devStageUp", (_client) => {
-      // TEMP LOCAL TEST TOOL:
-      // Local/dev stage skip used by DevStageControls. It uses the real stage advancement path.
-      const allowStageSkip =
-        this.isDevMode ||
-        process.env.NODE_ENV !== "production" ||
-        process.env.MINE_TEST_TOOLS === "true";
-
-      if (!allowStageSkip || !this.state.gameStarted) {
-        console.log(
-          "[DevStageUp] ignored. allowed=" + allowStageSkip +
-          ", started=" + this.state.gameStarted
-        );
-        return;
-      }
-
+    this.onMessage("devStageUp", (client) => {
+      if (!this.isDevMode || !this.state.gameStarted) return;
       const nextStage = this.state.stage + 1;
-      if (nextStage > 8) {
-        console.log("[DevStageUp] ignored. Already at/above stage cap. stage=" + this.state.stage);
-        return;
+      if (nextStage <= 8) {
+        console.log(`[Dev Mode] Manual stage up from ${this.state.stage} to ${nextStage}. Score: ${this.state.totalScore}`);
+        this.advanceToStage(nextStage);
       }
-
-      console.log(
-        "[DevStageUp] real stage skip " + this.state.stage + " -> " + nextStage +
-        ". Before board " + this.state.gridWidth + "x" + this.state.gridHeight +
-        ", score " + this.state.totalScore
-      );
-
-      this.advanceToStage(nextStage);
-      this.calculateScores();
-
-      const nextScoreGoal = this.stageThresholds[this.state.stage - 1] ?? null;
-
-      console.log(
-        "[DevStageUp] complete. stage=" + this.state.stage +
-        ", board=" + this.state.gridWidth + "x" + this.state.gridHeight +
-        ", goal=" + (nextScoreGoal ?? "none") +
-        ", collectibles=" + this.state.collectibles.length +
-        ", mines=" + (this.state.mines?.length ?? 0)
-      );
-
-      this.broadcast("devStageUpComplete", {
-        stage: this.state.stage,
-        gridWidth: this.state.gridWidth,
-        gridHeight: this.state.gridHeight,
-        nextScoreGoal,
-        collectibles: this.state.collectibles.length,
-        mines: this.state.mines?.length ?? 0,
-      });
     });
-
-    this.onMessage("devFillLines", (client, message: { color?: PlayerColor } = {}) => {
-      // TEMP LOCAL DEMO TOOL:
-      // Fills currently visible empty grid cells with normal player line cells.
-      // This is for quickly demoing mine blast effects against lots of player-made lines.
-      const allowLineFill =
-        this.isDevMode ||
-        process.env.NODE_ENV !== "production" ||
-        process.env.MINE_TEST_TOOLS === "true";
-
-      if (!allowLineFill || !this.state.gameStarted) {
-        console.log(
-          "[Demo Lines] ignored. allowed=" + allowLineFill +
-          ", started=" + this.state.gameStarted
-        );
-        return;
-      }
-
-      const player = this.state.players.get(client.sessionId);
-      const requestedColor = message?.color;
-      const color: PlayerColor =
-        requestedColor === "RED" || requestedColor === "GREEN" || requestedColor === "BLUE"
-          ? requestedColor
-          : player?.color || "RED";
-
-      this.fillVisibleEmptyGridWithDemoLines(color);
-    });
-
-    
 
     // TEMP MINE TEST TOOL: same as dev stage-up, but available to the hidden local test console.
-    
+    this.onMessage("mineTestSkipRound", (_client) => {
+      // TEMP MINE TEST TOOL: use the real stage-advance path, not a fake stage text bump.
+      // This keeps board expansion, score-goal progression, collectibles, enemies, and mines in sync.
+      const allowMineTestTools = this.isDevMode || process.env.NODE_ENV !== "production" || process.env.MINE_TEST_TOOLS === "true";
+      if (!allowMineTestTools || !this.state.gameStarted) return;
+
+      const nextStage = this.state.stage + 1;
+      if (nextStage <= 8) {
+        console.log(
+          `[Mine Test] Full skip from stage ${this.state.stage} to ${nextStage}. ` +
+          `Before: ${this.state.gridWidth}x${this.state.gridHeight}, score ${this.state.totalScore}`
+        );
+
+        this.advanceToStage(nextStage);
+        this.calculateScores();
+
+        console.log(
+          `[Mine Test] After skip: stage ${this.state.stage}, ` +
+          `board ${this.state.gridWidth}x${this.state.gridHeight}, ` +
+          `collectibles ${this.state.collectibles.length}, mines ${this.state.mines?.length ?? 0}`
+        );
+
+        this.broadcast("mineTestSkippedRound", {
+          stage: this.state.stage,
+          gridWidth: this.state.gridWidth,
+          gridHeight: this.state.gridHeight,
+        });
+      }
+    });
 
     // Handle dev mode node painting
     this.onMessage("devPaintNode", (_client, message: DevPaintNodeMessage) => {
@@ -1656,87 +1613,6 @@ export class GameRoom extends Room<GameState> {
     return false;
   }
 
-
-  private fillVisibleEmptyGridWithDemoLines(color: PlayerColor = "RED") {
-    const center = Math.floor(this.MAX_GRID_SIZE / 2);
-    const halfWidth = Math.floor(this.state.gridWidth / 2);
-    const halfHeight = Math.floor(this.state.gridHeight / 2);
-    const minX = center - halfWidth;
-    const maxX = center + halfWidth - 1;
-    const minY = center - halfHeight;
-    const maxY = center + halfHeight - 1;
-
-    const existingMineCells = new Set<string>();
-    for (const mine of this.state.mines) {
-      existingMineCells.add(String(mine.x) + "," + String(mine.y));
-    }
-
-    const isActorOnCell = (x: number, y: number) => {
-      for (const player of this.state.players.values()) {
-        if (player.x === x && player.y === y) return true;
-      }
-
-      for (const collectible of this.state.collectibles) {
-        if (collectible.x === x && collectible.y === y) return true;
-      }
-
-      for (const enemy of this.state.enemies) {
-        if (enemy.x === x && enemy.y === y) return true;
-      }
-
-      return false;
-    };
-
-    let placed = 0;
-    let skippedExistingLines = 0;
-    let skippedOccupied = 0;
-    let skippedMines = 0;
-
-    for (let y = minY; y <= maxY; y++) {
-      for (let x = minX; x <= maxX; x++) {
-        const key = String(x) + "," + String(y);
-
-        if (this.state.gridColors.has(key)) {
-          skippedExistingLines++;
-          continue;
-        }
-
-        if (existingMineCells.has(key)) {
-          skippedMines++;
-          continue;
-        }
-
-        if (isActorOnCell(x, y)) {
-          skippedOccupied++;
-          continue;
-        }
-
-        const cell = new GridCell();
-        cell.color = color;
-        this.state.gridColors.set(key, cell);
-        placed++;
-      }
-    }
-
-    this.calculateScores();
-
-    console.log(
-      "[Demo Lines] filled visible board with " + placed + " " + color + " line cells. " +
-      "Skipped existing lines=" + skippedExistingLines +
-      ", occupied=" + skippedOccupied +
-      ", mines=" + skippedMines +
-      ", totalScore=" + this.state.totalScore
-    );
-
-    this.broadcast("devFillLinesComplete", {
-      placed,
-      color,
-      skippedExistingLines,
-      skippedOccupied,
-      skippedMines,
-      totalScore: this.state.totalScore,
-    });
-  }
 
   private calculateScores() {
     const scores: Record<PlayerColor, number> = {

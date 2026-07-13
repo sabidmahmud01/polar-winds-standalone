@@ -828,58 +828,29 @@ export const GameScreen = ({
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (!AudioCtx) return;
 
-        const audioWindow = window as Window & { __polarMineAudioCtx?: AudioContext };
-        const ctx = audioWindow.__polarMineAudioCtx ?? new AudioCtx();
-        audioWindow.__polarMineAudioCtx = ctx;
-        if (ctx.state === "suspended") void ctx.resume();
+        const ctx = new AudioCtx();
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const filter = ctx.createBiquadFilter();
 
-        const now = ctx.currentTime + 0.001;
-        const master = ctx.createGain();
-        master.gain.setValueAtTime(0.92, now);
-        master.gain.exponentialRampToValueAtTime(0.0001, now + 0.48);
-        master.connect(ctx.destination);
+        osc.type = "sawtooth";
+        osc.frequency.setValueAtTime(95, now);
+        osc.frequency.exponentialRampToValueAtTime(32, now + 0.28);
+        filter.type = "lowpass";
+        filter.frequency.setValueAtTime(900, now);
+        filter.frequency.exponentialRampToValueAtTime(120, now + 0.32);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.42, now + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.36);
 
-        // Heavy low-frequency thump.
-        const thump = ctx.createOscillator();
-        const thumpGain = ctx.createGain();
-        thump.type = "triangle";
-        thump.frequency.setValueAtTime(135, now);
-        thump.frequency.exponentialRampToValueAtTime(34, now + 0.32);
-        thumpGain.gain.setValueAtTime(0.0001, now);
-        thumpGain.gain.exponentialRampToValueAtTime(0.95, now + 0.012);
-        thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
-        thump.connect(thumpGain);
-        thumpGain.connect(master);
-        thump.start(now);
-        thump.stop(now + 0.44);
-
-        // Short crack/noise burst so it reads more like an explosion and less like a UI beep.
-        const sampleRate = ctx.sampleRate;
-        const length = Math.floor(sampleRate * 0.24);
-        const buffer = ctx.createBuffer(1, length, sampleRate);
-        const data = buffer.getChannelData(0);
-        for (let i = 0; i < length; i++) {
-          const fade = 1 - i / length;
-          data[i] = (Math.random() * 2 - 1) * fade * fade;
-        }
-
-        const noise = ctx.createBufferSource();
-        const noiseFilter = ctx.createBiquadFilter();
-        const noiseGain = ctx.createGain();
-        noise.buffer = buffer;
-        noiseFilter.type = "lowpass";
-        noiseFilter.frequency.setValueAtTime(2100, now);
-        noiseFilter.frequency.exponentialRampToValueAtTime(420, now + 0.24);
-        noiseGain.gain.setValueAtTime(0.0001, now);
-        noiseGain.gain.exponentialRampToValueAtTime(0.72, now + 0.006);
-        noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
-        noise.connect(noiseFilter);
-        noiseFilter.connect(noiseGain);
-        noiseGain.connect(master);
-        noise.start(now);
-        noise.stop(now + 0.25);
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.38);
       } catch {
-        // Browser audio can fail before user interaction; do not break gameplay.
+        // Browser audio can fail before user interaction; the regular game sound fallback still runs.
       }
     };
 
@@ -890,6 +861,7 @@ export const GameScreen = ({
       mineType?: MineType;
       chainDepth?: number;
     }) => {
+      playSound("deactivate");
       playMineExplosionSound();
 
       if (typeof message?.x === "number" && typeof message?.y === "number") {
@@ -905,7 +877,7 @@ export const GameScreen = ({
         ]);
         window.setTimeout(() => {
           setMineExplosions((current) => current.filter((explosion) => explosion.id !== explosionId));
-        }, 720);
+        }, 520);
       }
 
       toast.warning(
@@ -923,8 +895,6 @@ export const GameScreen = ({
     const offGameAbandoned = room.onMessage("gameAbandoned", handleGameAbandoned);
     const offMineTriggered = room.onMessage("mineTriggered", handleMineTriggered);
     const offMineRiskBonus = room.onMessage("mineRiskBonus", handleMineRiskBonus);
-
-
 
     return () => {
       [
@@ -2386,7 +2356,7 @@ export const GameScreen = ({
 
             {/* Quick blast animation only; no lingering after-effect. */}
             {mineExplosions.map((explosion) => {
-              const pos = getVisualPos(explosion.x, explosion.y, -1.35);
+              const pos = getVisualPos(explosion.x, explosion.y, -1.95);
               return <MineExplosion key={explosion.id} position={pos} type={explosion.type} />;
             })}
 

@@ -923,7 +923,11 @@ export const GameScreen = ({
     const offGameAbandoned = room.onMessage("gameAbandoned", handleGameAbandoned);
     const offMineTriggered = room.onMessage("mineTriggered", handleMineTriggered);
     const offMineRiskBonus = room.onMessage("mineRiskBonus", handleMineRiskBonus);
-
+    const offMineTestSkippedRound = room.onMessage("mineTestSkippedRound", (message?: { stage?: number; gridWidth?: number; gridHeight?: number }) => {
+      toast.success(
+        `Skipped to stage ${message?.stage ?? "?"} — board ${message?.gridWidth ?? "?"}x${message?.gridHeight ?? "?"}`
+      );
+    });
 
 
     return () => {
