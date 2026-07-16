@@ -33,7 +33,6 @@ interface UnlockedMilestone {
 type CollectibleOrientation = 0 | 90 | 180 | 270;
 type CollectibleColor = PlayerColor | "NEUTRAL";
 type MineColor = CollectibleColor;
-type MineType = "square" | "horizontal" | "vertical" | "cross" | "diagonal" | "cluster";
 
 interface PlayerState {
   x: number;
@@ -72,7 +71,6 @@ interface MineState {
   y: number;
   id: string;
   color: MineColor;
-  type: MineType;
 }
 
 interface ServerGameState {
@@ -296,7 +294,6 @@ const Index = () => {
         y: mine.y,
         id: mine.id,
         color: mine.color as MineColor,
-        type: (mine.type || "square") as MineType,
       });
     });
 

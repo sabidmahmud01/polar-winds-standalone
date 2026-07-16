@@ -394,34 +394,23 @@ export class GameRoom extends Room<GameState> {
       });
     });
 
-    this.onMessage("devFillLines", (client, message: { color?: PlayerColor } = {}) => {
+    this.onMessage("devFillMines", (_client, message?: { includePaintedCells?: boolean }) => {
       // TEMP LOCAL DEMO TOOL:
-      // Fills currently visible empty grid cells with normal player line cells.
-      // This is for quickly demoing mine blast effects against lots of player-made lines.
-      const allowLineFill =
+      // Fills the currently visible empty board cells with demo mines so the mine effects are easy to show.
+      const allowDemoMineFill =
         this.isDevMode ||
         process.env.NODE_ENV !== "production" ||
         process.env.MINE_TEST_TOOLS === "true";
 
-      if (!allowLineFill || !this.state.gameStarted) {
+      if (!allowDemoMineFill || !this.state.gameStarted) {
         console.log(
-          "[Demo Lines] ignored. allowed=" + allowLineFill +
-          ", started=" + this.state.gameStarted
+          `[Demo Mines] ignored. allowed=${allowDemoMineFill}, started=${this.state.gameStarted}`
         );
         return;
       }
 
-      const player = this.state.players.get(client.sessionId);
-      const requestedColor = message?.color;
-      const color: PlayerColor =
-        requestedColor === "RED" || requestedColor === "GREEN" || requestedColor === "BLUE"
-          ? requestedColor
-          : player?.color || "RED";
-
-      this.fillVisibleEmptyGridWithDemoLines(color);
+      this.fillVisibleEmptyGridWithDemoMines(Boolean(message?.includePaintedCells));
     });
-
-    
 
     // TEMP MINE TEST TOOL: same as dev stage-up, but available to the hidden local test console.
     
@@ -1657,7 +1646,7 @@ export class GameRoom extends Room<GameState> {
   }
 
 
-  private fillVisibleEmptyGridWithDemoLines(color: PlayerColor = "RED") {
+  private fillVisibleEmptyGridWithDemoMines(includePaintedCells: boolean = false) {
     const center = Math.floor(this.MAX_GRID_SIZE / 2);
     const halfWidth = Math.floor(this.state.gridWidth / 2);
     const halfHeight = Math.floor(this.state.gridHeight / 2);
@@ -1666,10 +1655,17 @@ export class GameRoom extends Room<GameState> {
     const minY = center - halfHeight;
     const maxY = center + halfHeight - 1;
 
+    const colors: PlayerColor[] = ["RED", "GREEN", "BLUE"];
+    const demoTypes = ["square", "horizontal", "vertical", "cross", "diagonal", "cluster"];
     const existingMineCells = new Set<string>();
+
     for (const mine of this.state.mines) {
-      existingMineCells.add(String(mine.x) + "," + String(mine.y));
+      existingMineCells.add(`${mine.x},${mine.y}`);
     }
+
+    let placed = 0;
+    let skippedOccupied = 0;
+    let skippedPainted = 0;
 
     const isActorOnCell = (x: number, y: number) => {
       for (const player of this.state.players.values()) {
@@ -1687,54 +1683,46 @@ export class GameRoom extends Room<GameState> {
       return false;
     };
 
-    let placed = 0;
-    let skippedExistingLines = 0;
-    let skippedOccupied = 0;
-    let skippedMines = 0;
-
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
-        const key = String(x) + "," + String(y);
+        const key = `${x},${y}`;
 
-        if (this.state.gridColors.has(key)) {
-          skippedExistingLines++;
-          continue;
-        }
-
-        if (existingMineCells.has(key)) {
-          skippedMines++;
-          continue;
-        }
-
-        if (isActorOnCell(x, y)) {
+        if (existingMineCells.has(key) || isActorOnCell(x, y)) {
           skippedOccupied++;
           continue;
         }
 
-        const cell = new GridCell();
-        cell.color = color;
-        this.state.gridColors.set(key, cell);
+        // Default demo behavior: do NOT place mines under existing painted paths.
+        // That keeps this from instantly feeling broken and avoids same-cell trigger edge cases.
+        if (!includePaintedCells && this.state.gridColors.has(key)) {
+          skippedPainted++;
+          continue;
+        }
+
+        const mine = new Mine();
+        mine.id = `demo-mine-${this.state.stage}-${Date.now()}-${placed}`;
+        mine.x = x;
+        mine.y = y;
+        mine.color = colors[placed % colors.length];
+        (mine as any).type = demoTypes[placed % demoTypes.length];
+        this.state.mines.push(mine);
+        existingMineCells.add(key);
         placed++;
       }
     }
 
-    this.calculateScores();
-
     console.log(
-      "[Demo Lines] filled visible board with " + placed + " " + color + " line cells. " +
-      "Skipped existing lines=" + skippedExistingLines +
-      ", occupied=" + skippedOccupied +
-      ", mines=" + skippedMines +
-      ", totalScore=" + this.state.totalScore
+      `[Demo Mines] filled visible board with ${placed} demo mines. ` +
+      `Skipped occupied/existing=${skippedOccupied}, painted=${skippedPainted}, ` +
+      `total mines=${this.state.mines.length}`
     );
 
-    this.broadcast("devFillLinesComplete", {
+    this.broadcast("devFillMinesComplete", {
       placed,
-      color,
-      skippedExistingLines,
+      totalMines: this.state.mines.length,
       skippedOccupied,
-      skippedMines,
-      totalScore: this.state.totalScore,
+      skippedPainted,
+      includePaintedCells,
     });
   }
 

@@ -26,23 +26,6 @@ const TYPE_ACCENTS: Record<MineType, string> = {
   cluster: "#ffffff",
 };
 
-function AnchorFeet({ bodyMaterial }: { bodyMaterial: THREE.Material }) {
-  return (
-    <>
-      {[Math.PI / 4, Math.PI * 0.75, Math.PI * 1.25, Math.PI * 1.75].map((angle) => (
-        <mesh
-          key={angle}
-          position={[Math.cos(angle) * 0.52, -0.04, Math.sin(angle) * 0.52]}
-          rotation={[0, angle, 0]}
-          material={bodyMaterial}
-        >
-          <boxGeometry args={[0.28, 0.08, 0.13]} />
-        </mesh>
-      ))}
-    </>
-  );
-}
-
 function HorizontalMineBody({ bodyMaterial, rimMaterial, warningMaterial }: {
   bodyMaterial: THREE.Material;
   rimMaterial: THREE.Material;
@@ -50,48 +33,34 @@ function HorizontalMineBody({ bodyMaterial, rimMaterial, warningMaterial }: {
 }) {
   return (
     <>
-      {/* Central mine charge. This keeps the directional mine from reading as just a line. */}
+      {/* Long left/right body so the row-clearing direction is readable even from far away. */}
       <mesh position={[0, 0, 0]} material={bodyMaterial} castShadow>
-        <cylinderGeometry args={[0.48, 0.62, 0.22, 6]} />
+        <boxGeometry args={[1.65, 0.16, 0.38]} />
       </mesh>
-      <mesh position={[0, 0.13, 0]} material={rimMaterial}>
-        <cylinderGeometry args={[0.36, 0.44, 0.08, 6]} />
-      </mesh>
-      <AnchorFeet bodyMaterial={bodyMaterial} />
-
-      {/* Left/right blast barrels. The mine still has a clear horizontal direction, but the body is a mine casing. */}
-      <mesh position={[-0.72, 0.03, 0]} rotation={[0, 0, Math.PI / 2]} material={bodyMaterial} castShadow>
-        <cylinderGeometry args={[0.13, 0.18, 0.62, 8]} />
-      </mesh>
-      <mesh position={[0.72, 0.03, 0]} rotation={[0, 0, Math.PI / 2]} material={bodyMaterial} castShadow>
-        <cylinderGeometry args={[0.13, 0.18, 0.62, 8]} />
+      <mesh position={[0, 0.11, 0]} material={rimMaterial}>
+        <boxGeometry args={[1.35, 0.055, 0.16]} />
       </mesh>
 
-      {/* Heavy end caps make the barrels look like emitters instead of thin decorative lines. */}
-      <mesh position={[-1.1, 0.04, 0]} material={bodyMaterial} castShadow>
-        <boxGeometry args={[0.24, 0.25, 0.5]} />
+      {/* Fixed double rails point left/right. These no longer rotate with the mine. */}
+      <mesh position={[0, 0.18, -0.11]} material={warningMaterial}>
+        <boxGeometry args={[1.35, 0.055, 0.045]} />
       </mesh>
-      <mesh position={[1.1, 0.04, 0]} material={bodyMaterial} castShadow>
-        <boxGeometry args={[0.24, 0.25, 0.5]} />
-      </mesh>
-
-      {/* Horizontal warning glyph sits on top of the mine, not as the whole silhouette. */}
-      <mesh position={[0, 0.23, 0]} material={warningMaterial}>
-        <boxGeometry args={[0.78, 0.055, 0.09]} />
-      </mesh>
-      <mesh position={[-0.96, 0.22, 0]} rotation={[0, 0, Math.PI / 4]} material={warningMaterial}>
-        <boxGeometry args={[0.2, 0.055, 0.2]} />
-      </mesh>
-      <mesh position={[0.96, 0.22, 0]} rotation={[0, 0, Math.PI / 4]} material={warningMaterial}>
-        <boxGeometry args={[0.2, 0.055, 0.2]} />
+      <mesh position={[0, 0.18, 0.11]} material={warningMaterial}>
+        <boxGeometry args={[1.35, 0.055, 0.045]} />
       </mesh>
 
-      {/* Small side rails reinforce left/right, but the chunky casing remains the dominant shape. */}
-      <mesh position={[0, 0.16, -0.27]} material={rimMaterial}>
-        <boxGeometry args={[1.18, 0.055, 0.06]} />
+      {/* End emitters/arrow caps make it obvious this blasts horizontally. */}
+      <mesh position={[-0.94, 0.11, 0]} rotation={[0, 0, Math.PI / 4]} material={warningMaterial}>
+        <boxGeometry args={[0.22, 0.06, 0.22]} />
       </mesh>
-      <mesh position={[0, 0.16, 0.27]} material={rimMaterial}>
-        <boxGeometry args={[1.18, 0.055, 0.06]} />
+      <mesh position={[0.94, 0.11, 0]} rotation={[0, 0, Math.PI / 4]} material={warningMaterial}>
+        <boxGeometry args={[0.22, 0.06, 0.22]} />
+      </mesh>
+      <mesh position={[-0.78, 0.08, 0]} material={bodyMaterial}>
+        <boxGeometry args={[0.16, 0.22, 0.52]} />
+      </mesh>
+      <mesh position={[0.78, 0.08, 0]} material={bodyMaterial}>
+        <boxGeometry args={[0.16, 0.22, 0.52]} />
       </mesh>
     </>
   );
@@ -104,48 +73,34 @@ function VerticalMineBody({ bodyMaterial, rimMaterial, warningMaterial }: {
 }) {
   return (
     <>
-      {/* Central mine charge. Same mine family as horizontal, but aimed up/down on the board. */}
+      {/* Tall up/down body. This silhouette is intentionally different from the horizontal mine. */}
       <mesh position={[0, 0, 0]} material={bodyMaterial} castShadow>
-        <cylinderGeometry args={[0.48, 0.62, 0.22, 6]} />
+        <boxGeometry args={[0.38, 0.16, 1.65]} />
       </mesh>
-      <mesh position={[0, 0.13, 0]} material={rimMaterial}>
-        <cylinderGeometry args={[0.36, 0.44, 0.08, 6]} />
-      </mesh>
-      <AnchorFeet bodyMaterial={bodyMaterial} />
-
-      {/* Up/down blast barrels. These are fixed in world direction and no longer spin. */}
-      <mesh position={[0, 0.03, -0.72]} rotation={[Math.PI / 2, 0, 0]} material={bodyMaterial} castShadow>
-        <cylinderGeometry args={[0.13, 0.18, 0.62, 8]} />
-      </mesh>
-      <mesh position={[0, 0.03, 0.72]} rotation={[Math.PI / 2, 0, 0]} material={bodyMaterial} castShadow>
-        <cylinderGeometry args={[0.13, 0.18, 0.62, 8]} />
+      <mesh position={[0, 0.11, 0]} material={rimMaterial}>
+        <boxGeometry args={[0.16, 0.055, 1.35]} />
       </mesh>
 
-      {/* Heavy end caps make the vertical mine read as a planted directional charge, not a glowing line. */}
-      <mesh position={[0, 0.04, -1.1]} material={bodyMaterial} castShadow>
-        <boxGeometry args={[0.5, 0.25, 0.24]} />
+      {/* Fixed double rails point up/down. These no longer rotate with the mine. */}
+      <mesh position={[-0.11, 0.18, 0]} material={warningMaterial}>
+        <boxGeometry args={[0.045, 0.055, 1.35]} />
       </mesh>
-      <mesh position={[0, 0.04, 1.1]} material={bodyMaterial} castShadow>
-        <boxGeometry args={[0.5, 0.25, 0.24]} />
-      </mesh>
-
-      {/* Vertical warning glyph sits on top of the mine, not as the whole silhouette. */}
-      <mesh position={[0, 0.23, 0]} material={warningMaterial}>
-        <boxGeometry args={[0.09, 0.055, 0.78]} />
-      </mesh>
-      <mesh position={[0, 0.22, -0.96]} rotation={[0, Math.PI / 4, 0]} material={warningMaterial}>
-        <boxGeometry args={[0.2, 0.055, 0.2]} />
-      </mesh>
-      <mesh position={[0, 0.22, 0.96]} rotation={[0, Math.PI / 4, 0]} material={warningMaterial}>
-        <boxGeometry args={[0.2, 0.055, 0.2]} />
+      <mesh position={[0.11, 0.18, 0]} material={warningMaterial}>
+        <boxGeometry args={[0.045, 0.055, 1.35]} />
       </mesh>
 
-      {/* Small side rails reinforce up/down, but the chunky casing remains the dominant shape. */}
-      <mesh position={[-0.27, 0.16, 0]} material={rimMaterial}>
-        <boxGeometry args={[0.06, 0.055, 1.18]} />
+      {/* End emitters/arrow caps make it obvious this blasts vertically. */}
+      <mesh position={[0, 0.11, -0.94]} rotation={[0, Math.PI / 4, 0]} material={warningMaterial}>
+        <boxGeometry args={[0.22, 0.06, 0.22]} />
       </mesh>
-      <mesh position={[0.27, 0.16, 0]} material={rimMaterial}>
-        <boxGeometry args={[0.06, 0.055, 1.18]} />
+      <mesh position={[0, 0.11, 0.94]} rotation={[0, Math.PI / 4, 0]} material={warningMaterial}>
+        <boxGeometry args={[0.22, 0.06, 0.22]} />
+      </mesh>
+      <mesh position={[0, 0.08, -0.78]} material={bodyMaterial}>
+        <boxGeometry args={[0.52, 0.22, 0.16]} />
+      </mesh>
+      <mesh position={[0, 0.08, 0.78]} material={bodyMaterial}>
+        <boxGeometry args={[0.52, 0.22, 0.16]} />
       </mesh>
     </>
   );

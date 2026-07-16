@@ -1,5 +1,5 @@
 import { Room, Client } from "colyseus";
-import { GameState, Player, Collectible, GridCell, PlayerColor, CollectibleType, CollectibleColor, CollectibleOrientation, Enemy, EnemyPersonality, Mine, MineType } from "../schema/GameState";
+import { GameState, Player, Collectible, GridCell, PlayerColor, CollectibleType, CollectibleColor, CollectibleOrientation, Enemy, EnemyPersonality, Mine } from "../schema/GameState";
 import { CollectibleFactory } from "../collectibles";
 import { CollectibleSpawnConfig, COLLECTIBLE_PROPERTIES } from "../config/CollectibleSpawnConfig";
 import { LevelSpec, parseUnrealExport } from "../config/LevelSpec";
@@ -88,7 +88,6 @@ export class GameRoom extends Room<GameState> {
   private replayEvents: Array<Record<string, unknown>> = [];
   private gameStartTime: number = 0;
   private sessionEndedInDb: boolean = false;
-  private mineRiskBonuses: Record<PlayerColor, number> = { RED: 0, GREEN: 0, BLUE: 0 };
   private milestoneReportedTypes = new Set<string>();
   private pendingMilestoneRequests: Promise<void>[] = [];
   private countdownTimer: ReturnType<typeof setInterval> | null = null;
@@ -290,7 +289,6 @@ export class GameRoom extends Room<GameState> {
         // Paint the cell
         const cellKey = `${newX},${newY}`;
         let cell = this.state.gridColors.get(cellKey);
-        const isNewLineTile = cell?.color !== player.color;
         if (!cell) {
           cell = new GridCell();
           this.state.gridColors.set(cellKey, cell);
@@ -299,12 +297,7 @@ export class GameRoom extends Room<GameState> {
 
         // Trigger matching colored mines after the move/paint.
         // Since lines are derived from gridColors, clearing nearby cells breaks nearby lines.
-        const mineTriggered = this.checkMineTrigger(player);
-
-        // Reward risky line placement near visible mines, but never reward a move that detonates a mine.
-        if (!mineTriggered && isNewLineTile) {
-          this.awardMineProximityBonus(player, newX, newY);
-        }
+        this.checkMineTrigger(player);
 
         // Recalculate scores
         this.calculateScores();
@@ -343,88 +336,14 @@ export class GameRoom extends Room<GameState> {
     });
 
     // Handle dev mode stage up
-    this.onMessage("devStageUp", (_client) => {
-      // TEMP LOCAL TEST TOOL:
-      // Local/dev stage skip used by DevStageControls. It uses the real stage advancement path.
-      const allowStageSkip =
-        this.isDevMode ||
-        process.env.NODE_ENV !== "production" ||
-        process.env.MINE_TEST_TOOLS === "true";
-
-      if (!allowStageSkip || !this.state.gameStarted) {
-        console.log(
-          "[DevStageUp] ignored. allowed=" + allowStageSkip +
-          ", started=" + this.state.gameStarted
-        );
-        return;
-      }
-
+    this.onMessage("devStageUp", (client) => {
+      if (!this.isDevMode || !this.state.gameStarted) return;
       const nextStage = this.state.stage + 1;
-      if (nextStage > 8) {
-        console.log("[DevStageUp] ignored. Already at/above stage cap. stage=" + this.state.stage);
-        return;
+      if (nextStage <= 8) {
+        console.log(`[Dev Mode] Manual stage up from ${this.state.stage} to ${nextStage}. Score: ${this.state.totalScore}`);
+        this.advanceToStage(nextStage);
       }
-
-      console.log(
-        "[DevStageUp] real stage skip " + this.state.stage + " -> " + nextStage +
-        ". Before board " + this.state.gridWidth + "x" + this.state.gridHeight +
-        ", score " + this.state.totalScore
-      );
-
-      this.advanceToStage(nextStage);
-      this.calculateScores();
-
-      const nextScoreGoal = this.stageThresholds[this.state.stage - 1] ?? null;
-
-      console.log(
-        "[DevStageUp] complete. stage=" + this.state.stage +
-        ", board=" + this.state.gridWidth + "x" + this.state.gridHeight +
-        ", goal=" + (nextScoreGoal ?? "none") +
-        ", collectibles=" + this.state.collectibles.length +
-        ", mines=" + (this.state.mines?.length ?? 0)
-      );
-
-      this.broadcast("devStageUpComplete", {
-        stage: this.state.stage,
-        gridWidth: this.state.gridWidth,
-        gridHeight: this.state.gridHeight,
-        nextScoreGoal,
-        collectibles: this.state.collectibles.length,
-        mines: this.state.mines?.length ?? 0,
-      });
     });
-
-    this.onMessage("devFillLines", (client, message: { color?: PlayerColor } = {}) => {
-      // TEMP LOCAL DEMO TOOL:
-      // Fills currently visible empty grid cells with normal player line cells.
-      // This is for quickly demoing mine blast effects against lots of player-made lines.
-      const allowLineFill =
-        this.isDevMode ||
-        process.env.NODE_ENV !== "production" ||
-        process.env.MINE_TEST_TOOLS === "true";
-
-      if (!allowLineFill || !this.state.gameStarted) {
-        console.log(
-          "[Demo Lines] ignored. allowed=" + allowLineFill +
-          ", started=" + this.state.gameStarted
-        );
-        return;
-      }
-
-      const player = this.state.players.get(client.sessionId);
-      const requestedColor = message?.color;
-      const color: PlayerColor =
-        requestedColor === "RED" || requestedColor === "GREEN" || requestedColor === "BLUE"
-          ? requestedColor
-          : player?.color || "RED";
-
-      this.fillVisibleEmptyGridWithDemoLines(color);
-    });
-
-    
-
-    // TEMP MINE TEST TOOL: same as dev stage-up, but available to the hidden local test console.
-    
 
     // Handle dev mode node painting
     this.onMessage("devPaintNode", (_client, message: DevPaintNodeMessage) => {
@@ -1330,159 +1249,43 @@ export class GameRoom extends Room<GameState> {
   }
 
   private getMineDropCountForStage(stage: number): number {
-    // Stage 1 is safe. After that, counts stay divisible by 3 so RED/GREEN/BLUE
-    // always receive the same number of new mines.
-    // Stage 2: 3 total / 1 each, Stage 3: 6 total / 2 each, Stage 4: 9 total / 3 each.
+    // Stage 1 is the safe teaching round.
+    // Stage 2 starts with 3 mines, Stage 3 gets 5, then +2 each stage after that.
+    // This keeps mine pressure growing with the board without immediately flooding the map.
     if (stage <= 1) return 0;
-    return 3 * (stage - 1);
+    return stage * 2 - 1;
   }
 
-  private getMinesPerColorForStage(stage: number): number {
-    if (stage <= 1) return 0;
-    return stage - 1;
-  }
-
-  private getMineTypeForStage(stage: number): MineType {
-    // Fast-ramping weighted pool. Every type can appear once mine spawning starts,
-    // but early rounds heavily favor square mines and later rounds shift toward bigger threats.
-    const weights: Array<{ type: MineType; weight: number }> = [
-      { type: "square", weight: Math.max(25, 95 - stage * 14) },
-      { type: "horizontal", weight: Math.min(18, 4 + stage * 4) },
-      { type: "vertical", weight: Math.min(18, 4 + stage * 4) },
-      { type: "cross", weight: Math.min(16, 2 + stage * 3) },
-      { type: "diagonal", weight: Math.min(16, 2 + stage * 3) },
-      { type: "cluster", weight: Math.min(10, Math.max(1, stage * 2 - 3)) },
-    ];
-
-    const totalWeight = weights.reduce((sum, entry) => sum + entry.weight, 0);
-    let roll = this.rng.next() * totalWeight;
-
-    for (const entry of weights) {
-      roll -= entry.weight;
-      if (roll <= 0) return entry.type;
-    }
-
-    return "square";
-  }
-
-  private getMineDangerMultiplier(type: MineType): number {
-    switch (type) {
-      case "horizontal":
-      case "vertical":
-        return 1.25;
-      case "cross":
-      case "diagonal":
-        return 1.5;
-      case "cluster":
-        return 2;
-      case "square":
-      default:
-        return 1;
-    }
-  }
-
-  private getVisibleMineBounds() {
-    const center = Math.floor(this.MAX_GRID_SIZE / 2);
-    const halfWidth = Math.floor(this.state.gridWidth / 2);
-    const halfHeight = Math.floor(this.state.gridHeight / 2);
-
-    return {
-      minX: center - halfWidth,
-      maxX: center + halfWidth - 1,
-      minY: center - halfHeight,
-      maxY: center + halfHeight - 1,
-    };
-  }
-
-  private isInVisibleMineBounds(x: number, y: number): boolean {
-    const { minX, maxX, minY, maxY } = this.getVisibleMineBounds();
-    return x >= minX && x <= maxX && y >= minY && y <= maxY;
-  }
-
-  private addBlastCell(cells: Map<string, { x: number; y: number }>, x: number, y: number) {
-    if (!this.isInVisibleMineBounds(x, y)) return;
-    cells.set(`${x},${y}`, { x, y });
-  }
-
-  private getExplosionCellsForMine(mine: Mine): Array<{ x: number; y: number }> {
-    const type = (mine.type || "square") as MineType;
-    const cells = new Map<string, { x: number; y: number }>();
-    const { minX, maxX, minY, maxY } = this.getVisibleMineBounds();
-
-    if (type === "horizontal") {
-      for (let x = minX; x <= maxX; x++) this.addBlastCell(cells, x, mine.y);
-      return Array.from(cells.values());
-    }
-
-    if (type === "vertical") {
-      for (let y = minY; y <= maxY; y++) this.addBlastCell(cells, mine.x, y);
-      return Array.from(cells.values());
-    }
-
-    if (type === "cross") {
-      for (let x = minX; x <= maxX; x++) this.addBlastCell(cells, x, mine.y);
-      for (let y = minY; y <= maxY; y++) this.addBlastCell(cells, mine.x, y);
-      return Array.from(cells.values());
-    }
-
-    if (type === "diagonal") {
-      const maxDistance = Math.max(this.state.gridWidth, this.state.gridHeight);
-      for (let offset = -maxDistance; offset <= maxDistance; offset++) {
-        this.addBlastCell(cells, mine.x + offset, mine.y + offset);
-        this.addBlastCell(cells, mine.x + offset, mine.y - offset);
-      }
-      return Array.from(cells.values());
-    }
-
-    if (type === "cluster") {
-      const burstCenters = [
-        { x: mine.x, y: mine.y, radius: 2 },
-        { x: mine.x + 2, y: mine.y, radius: 1 },
-        { x: mine.x - 2, y: mine.y, radius: 1 },
-        { x: mine.x, y: mine.y + 2, radius: 1 },
-        { x: mine.x, y: mine.y - 2, radius: 1 },
-      ];
-
-      for (const burst of burstCenters) {
-        for (let dx = -burst.radius; dx <= burst.radius; dx++) {
-          for (let dy = -burst.radius; dy <= burst.radius; dy++) {
-            this.addBlastCell(cells, burst.x + dx, burst.y + dy);
-          }
-        }
-      }
-
-      return Array.from(cells.values());
-    }
-
-    // Standard square mine: 5x5 blast area.
-    for (let dx = -2; dx <= 2; dx++) {
-      for (let dy = -2; dy <= 2; dy++) {
-        this.addBlastCell(cells, mine.x + dx, mine.y + dy);
-      }
-    }
-
-    return Array.from(cells.values());
+  private getMineColorForDrop(dropIndex: number): PlayerColor {
+    // Balanced color assignment: stage 2's 3 mines become one RED, one GREEN, one BLUE.
+    // Later odd counts keep spreading pressure across all three player colors.
+    const colors: PlayerColor[] = ["RED", "GREEN", "BLUE"];
+    return colors[dropIndex % colors.length];
   }
 
   private dropMinesForCurrentStage() {
     // Colored mine rule: do not clear old unexploded mines.
-    // Each new stage adds a fresh balanced batch inside the visible board.
+    // Each new stage adds a fresh batch anywhere in the currently visible board.
+    // Mines no longer explode on spawn; invalid same-color path positions are skipped.
     const minesToDrop = this.getMineDropCountForStage(this.state.stage);
-    const minesPerColor = this.getMinesPerColorForStage(this.state.stage);
-
     if (minesToDrop <= 0) {
       console.log(`Stage ${this.state.stage}: no mines dropped`);
       return;
     }
 
-    const { minX, maxX, minY, maxY } = this.getVisibleMineBounds();
-    const colors: PlayerColor[] = ["RED", "GREEN", "BLUE"];
+    const center = Math.floor(this.MAX_GRID_SIZE / 2);
+    const halfWidth = Math.floor(this.state.gridWidth / 2);
+    const halfHeight = Math.floor(this.state.gridHeight / 2);
+    const minX = center - halfWidth;
+    const maxX = center + halfWidth - 1;
+    const minY = center - halfHeight;
+    const maxY = center + halfHeight - 1;
 
     let minesPlaced = 0;
     let blockedSameColorPath = 0;
     let blockedOccupied = 0;
 
-    const placeMineAt = (x: number, y: number, color: PlayerColor, type: MineType): boolean => {
+    const placeMineAt = (x: number, y: number, color: PlayerColor): boolean => {
       if (x < minX || x > maxX || y < minY || y > maxY) return false;
 
       if (this.isPositionOccupied(x, y)) {
@@ -1497,245 +1300,88 @@ export class GameRoom extends Room<GameState> {
       }
 
       const mine = new Mine();
-      mine.id = `${color}-${type}-mine-stage-${this.state.stage}-${Date.now()}-${minesPlaced}`;
+      mine.id = `${color}-mine-stage-${this.state.stage}-${Date.now()}-${minesPlaced}`;
       mine.x = x;
       mine.y = y;
       mine.color = color;
-      mine.type = type;
       this.state.mines.push(mine);
       minesPlaced++;
       return true;
     };
 
-    for (const mineColor of colors) {
-      for (let colorDropIndex = 0; colorDropIndex < minesPerColor; colorDropIndex++) {
-        const mineType = this.getMineTypeForStage(this.state.stage);
-        let placedThisMine = false;
+    for (let dropIndex = 0; dropIndex < minesToDrop; dropIndex++) {
+      const mineColor = this.getMineColorForDrop(dropIndex);
+      let placedThisMine = false;
 
-        let attempts = 0;
-        const maxAttempts = 150;
-        while (!placedThisMine && attempts < maxAttempts) {
-          attempts++;
-          const x = minX + Math.floor(this.rng.next() * this.state.gridWidth);
-          const y = minY + Math.floor(this.rng.next() * this.state.gridHeight);
-          placedThisMine = placeMineAt(x, y, mineColor, mineType);
-        }
+      // Random placement inside the current visible stage bounds.
+      let attempts = 0;
+      const maxAttempts = 150;
+      while (!placedThisMine && attempts < maxAttempts) {
+        attempts++;
+        const x = minX + Math.floor(this.rng.next() * this.state.gridWidth);
+        const y = minY + Math.floor(this.rng.next() * this.state.gridHeight);
+        placedThisMine = placeMineAt(x, y, mineColor);
+      }
 
-        // Fallback scan in case random attempts kept hitting players/collectibles/old mines/same-color paths.
-        for (let y = minY; y <= maxY && !placedThisMine; y++) {
-          for (let x = minX; x <= maxX && !placedThisMine; x++) {
-            placedThisMine = placeMineAt(x, y, mineColor, mineType);
-          }
+      // Fallback scan in case random attempts kept hitting players/collectibles/old mines/same-color paths.
+      for (let y = minY; y <= maxY && !placedThisMine; y++) {
+        for (let x = minX; x <= maxX && !placedThisMine; x++) {
+          placedThisMine = placeMineAt(x, y, mineColor);
         }
       }
     }
 
     console.log(
       `Stage ${this.state.stage}: placed ${minesPlaced}/${minesToDrop} colored mines, ` +
-      `${minesPerColor} per color, ` +
       `blocked ${blockedSameColorPath} same-color path attempts, ` +
       `blocked ${blockedOccupied} occupied attempts, ` +
       `${this.state.mines.length} total unexploded mines on board`
     );
   }
 
-  private detonateMine(
-    mine: Mine,
-    source: "player" | "bombing-run" | "chain",
-    chainDepth: number = 0,
-  ): boolean {
+  private detonateMineAt(
+    x: number,
+    y: number,
+    color: PlayerColor | "NEUTRAL",
+    source: "player" | "bombing-run",
+  ) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        this.state.gridColors.delete(`${x + dx},${y + dy}`);
+      }
+    }
+
+    this.broadcast("mineTriggered", {
+      x,
+      y,
+      color,
+      source,
+    });
+
+    this.logEvent({ e: "mine_trigger", p: color, x, y, source });
+  }
+
+  private checkMineTrigger(player: Player) {
     let mineIndex = -1;
     for (let i = 0; i < this.state.mines.length; i++) {
-      if (this.state.mines[i].id === mine.id) {
+      const mine = this.state.mines[i];
+      if (mine.x === player.x && mine.y === player.y) {
         mineIndex = i;
         break;
       }
     }
 
-    if (mineIndex === -1) return false;
+    if (mineIndex === -1) return;
 
-    const detonatedMine = this.state.mines[mineIndex];
+    const mine = this.state.mines[mineIndex];
+
+    // Color rule: only a player matching the mine color can trigger it.
+    if (mine.color !== player.color) return;
+
+    this.detonateMineAt(mine.x, mine.y, player.color, "player");
+
+    // One-time mine: remove it after activation.
     this.state.mines.splice(mineIndex, 1);
-
-    const mineType = (detonatedMine.type || "square") as MineType;
-    const blastCells = this.getExplosionCellsForMine(detonatedMine);
-    const blastCellKeys = new Set<string>();
-
-    for (const cell of blastCells) {
-      const key = `${cell.x},${cell.y}`;
-      blastCellKeys.add(key);
-      this.state.gridColors.delete(key);
-    }
-
-    this.broadcast("mineTriggered", {
-      x: detonatedMine.x,
-      y: detonatedMine.y,
-      color: detonatedMine.color,
-      mineType,
-      source,
-      chainDepth,
-    });
-
-    this.logEvent({
-      e: "mine_trigger",
-      p: detonatedMine.color,
-      x: detonatedMine.x,
-      y: detonatedMine.y,
-      source,
-      mineType,
-      chainDepth,
-    });
-
-    // Chain reaction: any mine caught in this blast detonates regardless of color.
-    const chainedMines = Array.from(this.state.mines).filter((otherMine) =>
-      blastCellKeys.has(`${otherMine.x},${otherMine.y}`)
-    );
-
-    for (const chainedMine of chainedMines) {
-      this.detonateMine(chainedMine, "chain", chainDepth + 1);
-    }
-
-    return true;
-  }
-
-  private awardMineProximityBonus(player: Player, x: number, y: number) {
-    let rawBonus = 0;
-    let minesNearMove = 0;
-
-    for (const mine of this.state.mines) {
-      // Risk bonus is based on the player's own hidden mines.
-      // Those are the only mines this player can personally trigger, so skating near them
-      // is the actual high-risk play. Enemy mines are visible but cannot explode on this player.
-      if (mine.color !== player.color) continue;
-
-      const distance = Math.max(Math.abs(mine.x - x), Math.abs(mine.y - y));
-      if (distance < 1 || distance > 2) continue;
-
-      const type = (mine.type || "square") as MineType;
-      const baseBonus = distance === 1 ? 3 : 1;
-      rawBonus += baseBonus * this.getMineDangerMultiplier(type);
-      minesNearMove++;
-    }
-
-    if (minesNearMove <= 0 || rawBonus <= 0) return;
-
-    const multiMineMultiplier = minesNearMove >= 4
-      ? 3
-      : minesNearMove === 3
-        ? 2
-        : minesNearMove === 2
-          ? 1.5
-          : 1;
-
-    const bonus = Math.min(25, Math.round(rawBonus * multiMineMultiplier));
-    if (bonus <= 0) return;
-
-    this.mineRiskBonuses[player.color] += bonus;
-
-    this.broadcast("mineRiskBonus", {
-      color: player.color,
-      x,
-      y,
-      bonus,
-      minesNearMove,
-    });
-
-    this.logEvent({ e: "mine_risk_bonus", p: player.color, x, y, bonus, minesNearMove });
-  }
-
-  private checkMineTrigger(player: Player): boolean {
-    for (const mine of Array.from(this.state.mines)) {
-      if (mine.x !== player.x || mine.y !== player.y) continue;
-
-      // Color rule: only a player matching the mine color can trigger it.
-      if (mine.color !== player.color) return false;
-
-      return this.detonateMine(mine, "player");
-    }
-
-    return false;
-  }
-
-
-  private fillVisibleEmptyGridWithDemoLines(color: PlayerColor = "RED") {
-    const center = Math.floor(this.MAX_GRID_SIZE / 2);
-    const halfWidth = Math.floor(this.state.gridWidth / 2);
-    const halfHeight = Math.floor(this.state.gridHeight / 2);
-    const minX = center - halfWidth;
-    const maxX = center + halfWidth - 1;
-    const minY = center - halfHeight;
-    const maxY = center + halfHeight - 1;
-
-    const existingMineCells = new Set<string>();
-    for (const mine of this.state.mines) {
-      existingMineCells.add(String(mine.x) + "," + String(mine.y));
-    }
-
-    const isActorOnCell = (x: number, y: number) => {
-      for (const player of this.state.players.values()) {
-        if (player.x === x && player.y === y) return true;
-      }
-
-      for (const collectible of this.state.collectibles) {
-        if (collectible.x === x && collectible.y === y) return true;
-      }
-
-      for (const enemy of this.state.enemies) {
-        if (enemy.x === x && enemy.y === y) return true;
-      }
-
-      return false;
-    };
-
-    let placed = 0;
-    let skippedExistingLines = 0;
-    let skippedOccupied = 0;
-    let skippedMines = 0;
-
-    for (let y = minY; y <= maxY; y++) {
-      for (let x = minX; x <= maxX; x++) {
-        const key = String(x) + "," + String(y);
-
-        if (this.state.gridColors.has(key)) {
-          skippedExistingLines++;
-          continue;
-        }
-
-        if (existingMineCells.has(key)) {
-          skippedMines++;
-          continue;
-        }
-
-        if (isActorOnCell(x, y)) {
-          skippedOccupied++;
-          continue;
-        }
-
-        const cell = new GridCell();
-        cell.color = color;
-        this.state.gridColors.set(key, cell);
-        placed++;
-      }
-    }
-
-    this.calculateScores();
-
-    console.log(
-      "[Demo Lines] filled visible board with " + placed + " " + color + " line cells. " +
-      "Skipped existing lines=" + skippedExistingLines +
-      ", occupied=" + skippedOccupied +
-      ", mines=" + skippedMines +
-      ", totalScore=" + this.state.totalScore
-    );
-
-    this.broadcast("devFillLinesComplete", {
-      placed,
-      color,
-      skippedExistingLines,
-      skippedOccupied,
-      skippedMines,
-      totalScore: this.state.totalScore,
-    });
   }
 
   private calculateScores() {
@@ -1805,11 +1451,6 @@ export class GameRoom extends Room<GameState> {
       scores.RED += scorePerPlayer;
       scores.GREEN += scorePerPlayer;
       scores.BLUE += scorePerPlayer;
-    }
-
-    // Add persistent mine risk bonuses after collectible scoring.
-    for (const color of colors) {
-      scores[color] += this.mineRiskBonuses[color];
     }
 
     // Update state (skip unchanged map entries to shrink encoded patches)

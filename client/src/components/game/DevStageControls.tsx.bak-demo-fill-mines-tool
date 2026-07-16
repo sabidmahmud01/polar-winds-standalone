@@ -2,11 +2,12 @@ import { useEffect, useState, useCallback } from "react";
 import type * as Client from "colyseus.js";
 
 /**
- * DevStageControls — temporary local/dev helpers.
+ * DevStageControls — temporary local/dev stage skip helper.
  *
- * F8: real server stage skip.
- * F7: fill visible empty cells with normal player line cells.
- * Backquote and F9 are intentionally ignored.
+ * Important behavior:
+ * - Backquote and F9 no longer open this menu.
+ * - F8 sends a real server devStageUp message while running on localhost/dev.
+ * - No fake client-only stage changes are used anymore.
  */
 
 interface DevStageControlsProps {
@@ -45,55 +46,34 @@ export function DevStageControls({ room, isDevMode, stage }: DevStageControlsPro
     room.send("devStageUp", {});
   }, [room, isDevMode, isLocalhost, stage]);
 
-  const fillEmptyLines = useCallback(() => {
-    console.log("[DevStageControls] fill empty lines requested", {
-      hasRoom: Boolean(room),
-      roomId: (room as any)?.roomId ?? (room as any)?.id,
-    });
-
-    if (!room) {
-      console.warn("[DevStageControls] No active room yet. Start the game first.");
-      return;
-    }
-
-    room.send("devFillLines", {});
-  }, [room]);
-
   const onKeyDown = useCallback((event: KeyboardEvent) => {
     const element = event.target as HTMLElement | null;
     const tag = element?.tagName?.toLowerCase();
     if (event.repeat || tag === "input" || tag === "textarea" || element?.isContentEditable) return;
 
+    // Use F8 now. Backquote and F9 are intentionally ignored so the old menu does not pop.
     if (event.key === "F8") {
       event.preventDefault();
       event.stopPropagation();
       advanceStage();
     }
-
-    if (event.key === "F7") {
-      event.preventDefault();
-      event.stopPropagation();
-      fillEmptyLines();
-    }
-  }, [advanceStage, fillEmptyLines]);
+  }, [advanceStage]);
 
   useEffect(() => {
     if (!enabled) return;
 
     (window as any).__polarStageSkip = advanceStage;
-    (window as any).__polarFillEmptyLines = fillEmptyLines;
     window.addEventListener("keydown", onKeyDown, true);
 
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
       delete (window as any).__polarStageSkip;
-      delete (window as any).__polarFillEmptyLines;
     };
-  }, [enabled, advanceStage, fillEmptyLines, onKeyDown]);
+  }, [enabled, advanceStage, onKeyDown]);
 
   if (!enabled) return null;
 
-  // In localhost-only mode, keep the screen clean. Use F8/F7 or the browser console helpers.
+  // In localhost-only mode, keep the screen clean. Use F8 or window.__polarStageSkip().
   if (!isDevMode) return null;
 
   if (!expanded) {
@@ -137,16 +117,7 @@ export function DevStageControls({ room, isDevMode, stage }: DevStageControlsPro
           Real Next Stage →
         </button>
       </div>
-      <button
-        type="button"
-        onClick={fillEmptyLines}
-        disabled={!room}
-        className="rounded border border-sky-400/30 bg-sky-950/35 px-2.5 py-1 text-xs font-medium text-sky-100 transition-colors hover:bg-sky-900/50 disabled:opacity-30 disabled:cursor-not-allowed"
-        title="Fill currently visible empty cells with your player line color. Existing paths, actors, and mines are skipped."
-      >
-        Fill Empty Lines
-      </button>
-      <p className="text-[9px] text-white/30">F8 skips stage. F7 fills empty line cells. Backquote/F9 ignored.</p>
+      <p className="text-[9px] text-white/30">Real server skip. F8 also works on localhost.</p>
     </div>
   );
 }

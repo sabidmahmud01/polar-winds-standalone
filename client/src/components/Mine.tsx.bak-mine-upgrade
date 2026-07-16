@@ -1,0 +1,62 @@
+import { useMemo, useRef } from "react";
+import { useFrame } from "@react-three/fiber";
+import * as THREE from "three";
+import { getPlayerHex } from "@/constants/playerColors";
+
+type MineColor = "RED" | "GREEN" | "BLUE" | "NEUTRAL";
+
+type MineProps = {
+  position?: [number, number, number];
+  color?: MineColor;
+};
+
+export function Mine({ position = [0, 0, 0], color = "NEUTRAL" }: MineProps) {
+  const groupRef = useRef<THREE.Group>(null);
+  const warningColor = color === "NEUTRAL" ? "#ef4444" : getPlayerHex(color);
+
+  const bodyMaterial = useMemo(() => new THREE.MeshStandardMaterial({
+    color: "#111827",
+    metalness: 0.55,
+    roughness: 0.32,
+    emissive: warningColor,
+    emissiveIntensity: 0.22,
+  }), [warningColor]);
+
+  const warningMaterial = useMemo(() => new THREE.MeshStandardMaterial({
+    color: warningColor,
+    emissive: warningColor,
+    emissiveIntensity: color === "GREEN" ? 0.55 : 0.85,
+  }), [warningColor, color]);
+
+  useFrame((state) => {
+    if (!groupRef.current) return;
+    groupRef.current.rotation.y = state.clock.elapsedTime * 0.7;
+    groupRef.current.position.y = position[1] + Math.sin(state.clock.elapsedTime * 2.0) * 0.08;
+  });
+
+  return (
+    <group ref={groupRef} position={position}>
+      {/* Placeholder mine: flat dark puck */}
+      <mesh material={bodyMaterial} castShadow>
+        <cylinderGeometry args={[0.55, 0.65, 0.18, 32]} />
+      </mesh>
+
+      {/* Color-coded warning core */}
+      <mesh position={[0, 0.12, 0]} material={warningMaterial}>
+        <sphereGeometry args={[0.16, 16, 16]} />
+      </mesh>
+
+      {/* Little prongs around the body */}
+      {[0, Math.PI / 2, Math.PI, Math.PI * 1.5].map((angle) => (
+        <mesh
+          key={angle}
+          position={[Math.cos(angle) * 0.72, 0, Math.sin(angle) * 0.72]}
+          rotation={[0, 0, Math.PI / 2]}
+          material={bodyMaterial}
+        >
+          <cylinderGeometry args={[0.05, 0.05, 0.35, 8]} />
+        </mesh>
+      ))}
+    </group>
+  );
+}

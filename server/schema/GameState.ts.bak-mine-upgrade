@@ -16,7 +16,6 @@ export type CollectibleType = "network" | "box" | "equilibrium" | "clone" | "van
 
 export type CollectibleColor = PlayerColor | "NEUTRAL";
 export type MineColor = PlayerColor | "NEUTRAL";
-export type MineType = "square" | "horizontal" | "vertical" | "cross" | "diagonal" | "cluster";
 
 export type CollectibleOrientation = 0 | 90 | 180 | 270;
 
@@ -49,7 +48,6 @@ export class Mine extends Schema {
   @type("string") id: string = "";
   // RED = orange, GREEN = white, BLUE = blue. NEUTRAL is kept only for compatibility.
   @type("string") color: MineColor = "NEUTRAL";
-  @type("string") type: MineType = "square";
 }
 
 export class GridCell extends Schema {
