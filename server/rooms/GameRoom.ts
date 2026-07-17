@@ -88,7 +88,8 @@ export class GameRoom extends Room<GameState> {
   private replayEvents: Array<Record<string, unknown>> = [];
   private gameStartTime: number = 0;
   private sessionEndedInDb: boolean = false;
-  private mineRiskBonuses: Record<PlayerColor, number> = { RED: 0, GREEN: 0, BLUE: 0 };
+  private readonly MINE_TEAM_PENALTY = 5;
+  private mineTeamPenaltyTotal = 0;
   private milestoneReportedTypes = new Set<string>();
   private pendingMilestoneRequests: Promise<void>[] = [];
   private countdownTimer: ReturnType<typeof setInterval> | null = null;
@@ -290,7 +291,6 @@ export class GameRoom extends Room<GameState> {
         // Paint the cell
         const cellKey = `${newX},${newY}`;
         let cell = this.state.gridColors.get(cellKey);
-        const isNewLineTile = cell?.color !== player.color;
         if (!cell) {
           cell = new GridCell();
           this.state.gridColors.set(cellKey, cell);
@@ -299,12 +299,7 @@ export class GameRoom extends Room<GameState> {
 
         // Trigger matching colored mines after the move/paint.
         // Since lines are derived from gridColors, clearing nearby cells breaks nearby lines.
-        const mineTriggered = this.checkMineTrigger(player);
-
-        // Reward risky line placement near visible mines, but never reward a move that detonates a mine.
-        if (!mineTriggered && isNewLineTile) {
-          this.awardMineProximityBonus(player, newX, newY);
-        }
+        this.checkMineInteraction(player);
 
         // Recalculate scores
         this.calculateScores();
@@ -1330,28 +1325,21 @@ export class GameRoom extends Room<GameState> {
   }
 
   private getMineDropCountForStage(stage: number): number {
-    // Stage 1 is safe. After that, counts stay divisible by 3 so RED/GREEN/BLUE
-    // always receive the same number of new mines.
-    // Stage 2: 3 total / 1 each, Stage 3: 6 total / 2 each, Stage 4: 9 total / 3 each.
-    if (stage <= 1) return 0;
-    return 3 * (stage - 1);
+    return this.getMinesPerColorForStage(stage) * 3;
   }
 
   private getMinesPerColorForStage(stage: number): number {
     if (stage <= 1) return 0;
-    return stage - 1;
+    if (stage <= 3) return 1;
+    return 2;
   }
 
   private getMineTypeForStage(stage: number): MineType {
-    // Fast-ramping weighted pool. Every type can appear once mine spawning starts,
-    // but early rounds heavily favor square mines and later rounds shift toward bigger threats.
+    // Keep the mine set readable: square is the default, directional mines appear more often later.
     const weights: Array<{ type: MineType; weight: number }> = [
-      { type: "square", weight: Math.max(25, 95 - stage * 14) },
-      { type: "horizontal", weight: Math.min(18, 4 + stage * 4) },
-      { type: "vertical", weight: Math.min(18, 4 + stage * 4) },
-      { type: "cross", weight: Math.min(16, 2 + stage * 3) },
-      { type: "diagonal", weight: Math.min(16, 2 + stage * 3) },
-      { type: "cluster", weight: Math.min(10, Math.max(1, stage * 2 - 3)) },
+      { type: "square", weight: Math.max(45, 95 - stage * 10) },
+      { type: "horizontal", weight: Math.min(24, 4 + stage * 4) },
+      { type: "vertical", weight: Math.min(24, 4 + stage * 4) },
     ];
 
     const totalWeight = weights.reduce((sum, entry) => sum + entry.weight, 0);
@@ -1363,22 +1351,6 @@ export class GameRoom extends Room<GameState> {
     }
 
     return "square";
-  }
-
-  private getMineDangerMultiplier(type: MineType): number {
-    switch (type) {
-      case "horizontal":
-      case "vertical":
-        return 1.25;
-      case "cross":
-      case "diagonal":
-        return 1.5;
-      case "cluster":
-        return 2;
-      case "square":
-      default:
-        return 1;
-    }
   }
 
   private getVisibleMineBounds() {
@@ -1419,44 +1391,9 @@ export class GameRoom extends Room<GameState> {
       return Array.from(cells.values());
     }
 
-    if (type === "cross") {
-      for (let x = minX; x <= maxX; x++) this.addBlastCell(cells, x, mine.y);
-      for (let y = minY; y <= maxY; y++) this.addBlastCell(cells, mine.x, y);
-      return Array.from(cells.values());
-    }
-
-    if (type === "diagonal") {
-      const maxDistance = Math.max(this.state.gridWidth, this.state.gridHeight);
-      for (let offset = -maxDistance; offset <= maxDistance; offset++) {
-        this.addBlastCell(cells, mine.x + offset, mine.y + offset);
-        this.addBlastCell(cells, mine.x + offset, mine.y - offset);
-      }
-      return Array.from(cells.values());
-    }
-
-    if (type === "cluster") {
-      const burstCenters = [
-        { x: mine.x, y: mine.y, radius: 2 },
-        { x: mine.x + 2, y: mine.y, radius: 1 },
-        { x: mine.x - 2, y: mine.y, radius: 1 },
-        { x: mine.x, y: mine.y + 2, radius: 1 },
-        { x: mine.x, y: mine.y - 2, radius: 1 },
-      ];
-
-      for (const burst of burstCenters) {
-        for (let dx = -burst.radius; dx <= burst.radius; dx++) {
-          for (let dy = -burst.radius; dy <= burst.radius; dy++) {
-            this.addBlastCell(cells, burst.x + dx, burst.y + dy);
-          }
-        }
-      }
-
-      return Array.from(cells.values());
-    }
-
-    // Standard square mine: 5x5 blast area.
-    for (let dx = -2; dx <= 2; dx++) {
-      for (let dy = -2; dy <= 2; dy++) {
+    // Standard square mine: 3x3 blast area.
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
         this.addBlastCell(cells, mine.x + dx, mine.y + dy);
       }
     }
@@ -1479,7 +1416,7 @@ export class GameRoom extends Room<GameState> {
     const colors: PlayerColor[] = ["RED", "GREEN", "BLUE"];
 
     let minesPlaced = 0;
-    let blockedSameColorPath = 0;
+    let blockedPaintedCell = 0;
     let blockedOccupied = 0;
 
     const placeMineAt = (x: number, y: number, color: PlayerColor, type: MineType): boolean => {
@@ -1491,8 +1428,8 @@ export class GameRoom extends Room<GameState> {
       }
 
       const paintedCell = this.state.gridColors.get(`${x},${y}`);
-      if (paintedCell?.color === color) {
-        blockedSameColorPath++;
+      if (paintedCell?.color) {
+        blockedPaintedCell++;
         return false;
       }
 
@@ -1521,7 +1458,7 @@ export class GameRoom extends Room<GameState> {
           placedThisMine = placeMineAt(x, y, mineColor, mineType);
         }
 
-        // Fallback scan in case random attempts kept hitting players/collectibles/old mines/same-color paths.
+        // Fallback scan in case random attempts kept hitting players/collectibles/old mines/painted cells.
         for (let y = minY; y <= maxY && !placedThisMine; y++) {
           for (let x = minX; x <= maxX && !placedThisMine; x++) {
             placedThisMine = placeMineAt(x, y, mineColor, mineType);
@@ -1533,9 +1470,9 @@ export class GameRoom extends Room<GameState> {
     console.log(
       `Stage ${this.state.stage}: placed ${minesPlaced}/${minesToDrop} colored mines, ` +
       `${minesPerColor} per color, ` +
-      `blocked ${blockedSameColorPath} same-color path attempts, ` +
+      `blocked ${blockedPaintedCell} painted-cell attempts, ` +
       `blocked ${blockedOccupied} occupied attempts, ` +
-      `${this.state.mines.length} total unexploded mines on board`
+      `${this.state.mines.length} total mines on board`
     );
   }
 
@@ -1544,18 +1481,13 @@ export class GameRoom extends Room<GameState> {
     source: "player" | "bombing-run" | "chain",
     chainDepth: number = 0,
   ): boolean {
-    let mineIndex = -1;
-    for (let i = 0; i < this.state.mines.length; i++) {
-      if (this.state.mines[i].id === mine.id) {
-        mineIndex = i;
-        break;
-      }
-    }
+    const detonatedMine = Array.from(this.state.mines).find((candidate) => candidate.id === mine.id);
+    if (!detonatedMine) return false;
+    if (detonatedMine.triggered) return false;
 
-    if (mineIndex === -1) return false;
-
-    const detonatedMine = this.state.mines[mineIndex];
-    this.state.mines.splice(mineIndex, 1);
+    detonatedMine.triggered = true;
+    detonatedMine.penaltyApplied = true;
+    this.mineTeamPenaltyTotal += this.MINE_TEAM_PENALTY;
 
     const mineType = (detonatedMine.type || "square") as MineType;
     const blastCells = this.getExplosionCellsForMine(detonatedMine);
@@ -1574,6 +1506,8 @@ export class GameRoom extends Room<GameState> {
       mineType,
       source,
       chainDepth,
+      teamPenalty: this.MINE_TEAM_PENALTY,
+      totalTeamPenalty: this.mineTeamPenaltyTotal,
     });
 
     this.logEvent({
@@ -1584,73 +1518,71 @@ export class GameRoom extends Room<GameState> {
       source,
       mineType,
       chainDepth,
+      teamPenalty: this.MINE_TEAM_PENALTY,
+      totalTeamPenalty: this.mineTeamPenaltyTotal,
     });
 
-    // Chain reaction: any mine caught in this blast detonates regardless of color.
-    const chainedMines = Array.from(this.state.mines).filter((otherMine) =>
-      blastCellKeys.has(`${otherMine.x},${otherMine.y}`)
-    );
+    // Chain reaction: the original blast may trigger one random nearby mine.
+    // Chained mines still clear their own blast area, but cannot continue the chain.
+    if (chainDepth === 0) {
+      const chainedCandidates = Array.from(this.state.mines).filter((otherMine) =>
+        !otherMine.triggered && otherMine.id !== detonatedMine.id && blastCellKeys.has(`${otherMine.x},${otherMine.y}`)
+      );
 
-    for (const chainedMine of chainedMines) {
-      this.detonateMine(chainedMine, "chain", chainDepth + 1);
+      if (chainedCandidates.length > 0) {
+        const chainedMine = chainedCandidates[Math.floor(this.rng.next() * chainedCandidates.length)];
+        this.detonateMine(chainedMine, "chain", chainDepth + 1);
+      }
     }
 
     return true;
   }
 
-  private awardMineProximityBonus(player: Player, x: number, y: number) {
-    let rawBonus = 0;
-    let minesNearMove = 0;
+  private resolveMine(mine: Mine, claimedByColor: PlayerColor): boolean {
+    if (!mine.triggered || mine.color === claimedByColor) return false;
 
-    for (const mine of this.state.mines) {
-      // Risk bonus is based on the player's own hidden mines.
-      // Those are the only mines this player can personally trigger, so skating near them
-      // is the actual high-risk play. Enemy mines are visible but cannot explode on this player.
-      if (mine.color !== player.color) continue;
-
-      const distance = Math.max(Math.abs(mine.x - x), Math.abs(mine.y - y));
-      if (distance < 1 || distance > 2) continue;
-
-      const type = (mine.type || "square") as MineType;
-      const baseBonus = distance === 1 ? 3 : 1;
-      rawBonus += baseBonus * this.getMineDangerMultiplier(type);
-      minesNearMove++;
+    const refund = mine.penaltyApplied ? this.MINE_TEAM_PENALTY : 0;
+    if (refund > 0) {
+      this.mineTeamPenaltyTotal = Math.max(0, this.mineTeamPenaltyTotal - refund);
     }
 
-    if (minesNearMove <= 0 || rawBonus <= 0) return;
+    mine.triggered = false;
+    mine.penaltyApplied = false;
 
-    const multiMineMultiplier = minesNearMove >= 4
-      ? 3
-      : minesNearMove === 3
-        ? 2
-        : minesNearMove === 2
-          ? 1.5
-          : 1;
-
-    const bonus = Math.min(25, Math.round(rawBonus * multiMineMultiplier));
-    if (bonus <= 0) return;
-
-    this.mineRiskBonuses[player.color] += bonus;
-
-    this.broadcast("mineRiskBonus", {
-      color: player.color,
-      x,
-      y,
-      bonus,
-      minesNearMove,
+    this.broadcast("mineResolved", {
+      x: mine.x,
+      y: mine.y,
+      color: mine.color,
+      claimedByColor,
+      teamRefund: refund,
+      totalTeamPenalty: this.mineTeamPenaltyTotal,
     });
 
-    this.logEvent({ e: "mine_risk_bonus", p: player.color, x, y, bonus, minesNearMove });
+    this.logEvent({
+      e: "mine_resolve",
+      p: claimedByColor,
+      mineColor: mine.color,
+      x: mine.x,
+      y: mine.y,
+      teamRefund: refund,
+      totalTeamPenalty: this.mineTeamPenaltyTotal,
+    });
+
+    return true;
   }
 
-  private checkMineTrigger(player: Player): boolean {
+  private checkMineInteraction(player: Player): boolean {
     for (const mine of Array.from(this.state.mines)) {
       if (mine.x !== player.x || mine.y !== player.y) continue;
 
-      // Color rule: only a player matching the mine color can trigger it.
-      if (mine.color !== player.color) return false;
+      if (mine.triggered && mine.color !== player.color) {
+        return this.resolveMine(mine, player.color);
+      }
 
-      return this.detonateMine(mine, "player");
+      if (mine.triggered) return false;
+
+      // Color rule: only a player matching the mine color can trigger it.
+      return mine.color === player.color ? this.detonateMine(mine, "player") : false;
     }
 
     return false;
@@ -1807,13 +1739,9 @@ export class GameRoom extends Room<GameState> {
       scores.BLUE += scorePerPlayer;
     }
 
-    // Add persistent mine risk bonuses after collectible scoring.
-    for (const color of colors) {
-      scores[color] += this.mineRiskBonuses[color];
-    }
-
     // Update state (skip unchanged map entries to shrink encoded patches)
-    const nextTotal = scores.RED + scores.GREEN + scores.BLUE;
+    const baseTotal = scores.RED + scores.GREEN + scores.BLUE;
+    const nextTotal = Math.max(0, baseTotal - this.mineTeamPenaltyTotal);
     if (this.state.scores.get("RED") !== scores.RED) {
       this.state.scores.set("RED", scores.RED);
     }

@@ -46,7 +46,7 @@ type PlayerColor = "RED" | "GREEN" | "BLUE";
 type ClueColorLower = "red" | "green" | "blue";
 type CollectibleType = "network" | "box" | "equilibrium" | "clone" | "vantage" | "galaxy" | "polyomino";
 type CollectibleOrientation = 0 | 90 | 180 | 270;
-type MineType = "square" | "horizontal" | "vertical" | "cross" | "diagonal" | "cluster";
+type MineType = "square" | "horizontal" | "vertical";
 
 interface PlayerState {
   x: number;
@@ -84,6 +84,7 @@ interface MineState {
   id: string;
   color: PlayerColor | "NEUTRAL";
   type: MineType;
+  triggered: boolean;
 }
 
 interface Ping {
@@ -915,14 +916,12 @@ export const GameScreen = ({
       );
     };
 
-    const handleMineRiskBonus = (message?: { color?: PlayerColor; bonus?: number; minesNearMove?: number }) => {
-      if (!message?.bonus) return;
-      toast.success(`Risk bonus +${message.bonus} for skirting ${message.minesNearMove ?? 1} hidden mine(s)!`);
-    };
-
     const offGameAbandoned = room.onMessage("gameAbandoned", handleGameAbandoned);
     const offMineTriggered = room.onMessage("mineTriggered", handleMineTriggered);
-    const offMineRiskBonus = room.onMessage("mineRiskBonus", handleMineRiskBonus);
+    const offMineResolved = room.onMessage("mineResolved", (message?: { color?: PlayerColor; claimedByColor?: PlayerColor; teamRefund?: number }) => {
+      if (!message?.teamRefund) return;
+      toast.success(`${message.claimedByColor ?? "A teammate"} resolved ${message.color ?? "a"} mine: team +${message.teamRefund}`);
+    });
 
 
 
@@ -939,7 +938,7 @@ export const GameScreen = ({
         offAbandonExpired,
         offGameAbandoned,
         offMineTriggered,
-        offMineRiskBonus,
+        offMineResolved,
       ].forEach((off) => {
         if (typeof off === "function") off();
       });
@@ -2393,7 +2392,7 @@ export const GameScreen = ({
             {/* Color-coded mines: hidden from the matching player color */}
             {visibleMines.map((mine) => {
               const pos = getVisualPos(mine.x, mine.y, -2.05);
-              return <Mine key={mine.id} position={pos} color={mine.color} type={mine.type} />;
+              return <Mine key={mine.id} position={pos} color={mine.color} type={mine.type} triggered={mine.triggered} />;
             })}
 
             {/* Players */}

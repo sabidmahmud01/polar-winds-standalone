@@ -4,12 +4,13 @@ import * as THREE from "three";
 import { getPlayerHex } from "@/constants/playerColors";
 
 type MineColor = "RED" | "GREEN" | "BLUE" | "NEUTRAL";
-export type MineType = "square" | "horizontal" | "vertical" | "cross" | "diagonal" | "cluster";
+export type MineType = "square" | "horizontal" | "vertical";
 
 type MineProps = {
   position?: [number, number, number];
   color?: MineColor;
   type?: MineType;
+  triggered?: boolean;
 };
 
 type MineExplosionProps = {
@@ -21,9 +22,6 @@ const TYPE_ACCENTS: Record<MineType, string> = {
   square: "#38bdf8",
   horizontal: "#f97316",
   vertical: "#facc15",
-  cross: "#f43f5e",
-  diagonal: "#a855f7",
-  cluster: "#ffffff",
 };
 
 function AnchorFeet({ bodyMaterial }: { bodyMaterial: THREE.Material }) {
@@ -151,8 +149,7 @@ function VerticalMineBody({ bodyMaterial, rimMaterial, warningMaterial }: {
   );
 }
 
-function PatternMineBody({ type, bodyMaterial, rimMaterial, warningMaterial }: {
-  type: Exclude<MineType, "horizontal" | "vertical">;
+function SquareMineBody({ bodyMaterial, rimMaterial, warningMaterial }: {
   bodyMaterial: THREE.Material;
   rimMaterial: THREE.Material;
   warningMaterial: THREE.Material;
@@ -167,87 +164,55 @@ function PatternMineBody({ type, bodyMaterial, rimMaterial, warningMaterial }: {
         <cylinderGeometry args={[0.47, 0.52, 0.08, 6]} />
       </mesh>
 
-      {type === "cross" && (
-        <>
-          <mesh position={[0, 0.18, 0]} material={warningMaterial}>
-            <boxGeometry args={[1.25, 0.08, 0.15]} />
-          </mesh>
-          <mesh position={[0, 0.2, 0]} material={warningMaterial}>
-            <boxGeometry args={[0.15, 0.08, 1.25]} />
-          </mesh>
-        </>
-      )}
-
-      {type === "diagonal" && (
-        <>
-          <mesh position={[0, 0.18, 0]} rotation={[0, Math.PI / 4, 0]} material={warningMaterial}>
-            <boxGeometry args={[1.3, 0.08, 0.15]} />
-          </mesh>
-          <mesh position={[0, 0.2, 0]} rotation={[0, -Math.PI / 4, 0]} material={warningMaterial}>
-            <boxGeometry args={[1.3, 0.08, 0.15]} />
-          </mesh>
-        </>
-      )}
-
-      {type === "cluster" && (
-        <>
-          {[0, Math.PI / 2, Math.PI, Math.PI * 1.5].map((angle) => (
-            <mesh
-              key={angle}
-              position={[Math.cos(angle) * 0.45, 0.18, Math.sin(angle) * 0.45]}
-              material={warningMaterial}
-            >
-              <sphereGeometry args={[0.13, 12, 12]} />
-            </mesh>
-          ))}
-        </>
-      )}
-
-      {type === "square" && (
-        <>
-          {[Math.PI / 4, Math.PI * 0.75, Math.PI * 1.25, Math.PI * 1.75].map((angle) => (
-            <mesh
-              key={angle}
-              position={[Math.cos(angle) * 0.42, 0.16, Math.sin(angle) * 0.42]}
-              rotation={[0, angle, 0]}
-              material={warningMaterial}
-            >
-              <boxGeometry args={[0.22, 0.07, 0.22]} />
-            </mesh>
-          ))}
-        </>
-      )}
+      {[Math.PI / 4, Math.PI * 0.75, Math.PI * 1.25, Math.PI * 1.75].map((angle) => (
+        <mesh
+          key={angle}
+          position={[Math.cos(angle) * 0.42, 0.16, Math.sin(angle) * 0.42]}
+          rotation={[0, angle, 0]}
+          material={warningMaterial}
+        >
+          <boxGeometry args={[0.22, 0.07, 0.22]} />
+        </mesh>
+      ))}
     </>
   );
 }
 
-export function Mine({ position = [0, 0, 0], color = "NEUTRAL", type = "square" }: MineProps) {
+export function Mine({ position = [0, 0, 0], color = "NEUTRAL", type = "square", triggered = false }: MineProps) {
   const groupRef = useRef<THREE.Group>(null);
   const colorAccent = color === "NEUTRAL" ? "#ef4444" : getPlayerHex(color);
   const typeAccent = TYPE_ACCENTS[type];
   const warningColor = color === "NEUTRAL" ? typeAccent : colorAccent;
+  const opacity = triggered ? 0.35 : 1;
+  const glowScale = triggered ? 0.25 : 1;
 
   const bodyMaterial = useMemo(() => new THREE.MeshStandardMaterial({
     color: "#08111f",
     metalness: 0.62,
     roughness: 0.28,
     emissive: "#0f172a",
-    emissiveIntensity: 0.25,
-  }), []);
+    emissiveIntensity: 0.25 * glowScale,
+    transparent: true,
+    opacity,
+  }), [glowScale, opacity]);
 
   const rimMaterial = useMemo(() => new THREE.MeshStandardMaterial({
     color: "#172554",
     metalness: 0.45,
     roughness: 0.35,
     emissive: warningColor,
-    emissiveIntensity: color === "GREEN" ? 0.32 : 0.45,
-  }), [warningColor, color]);
+    emissiveIntensity: (color === "GREEN" ? 0.32 : 0.45) * glowScale,
+    transparent: true,
+    opacity,
+  }), [warningColor, color, glowScale, opacity]);
 
   const warningMaterial = useMemo(() => new THREE.MeshStandardMaterial({
     color: warningColor,
     emissive: warningColor,
-    emissiveIntensity: color === "GREEN" ? 0.65 : 1.0,
-  }), [warningColor, color]);
+    emissiveIntensity: (color === "GREEN" ? 0.65 : 1.0) * glowScale,
+    transparent: true,
+    opacity,
+  }), [warningColor, color, glowScale, opacity]);
 
   useFrame((state) => {
     if (!groupRef.current) return;
@@ -264,12 +229,12 @@ export function Mine({ position = [0, 0, 0], color = "NEUTRAL", type = "square" 
       ) : type === "vertical" ? (
         <VerticalMineBody bodyMaterial={bodyMaterial} rimMaterial={rimMaterial} warningMaterial={warningMaterial} />
       ) : (
-        <PatternMineBody type={type} bodyMaterial={bodyMaterial} rimMaterial={rimMaterial} warningMaterial={warningMaterial} />
+        <SquareMineBody bodyMaterial={bodyMaterial} rimMaterial={rimMaterial} warningMaterial={warningMaterial} />
       )}
 
-      {/* Center charge. Cluster mines get a bigger core because they are the most dangerous. */}
+      {/* Center charge. */}
       <mesh position={[0, 0.28, 0]} material={warningMaterial}>
-        <sphereGeometry args={[type === "cluster" ? 0.19 : 0.13, 16, 16]} />
+        <sphereGeometry args={[0.13, 16, 16]} />
       </mesh>
     </group>
   );
@@ -307,7 +272,7 @@ export function MineExplosion({ position = [0, 0, 0], type = "square" }: MineExp
     const age = state.clock.elapsedTime - startTime.current;
     const progress = Math.min(age / 0.62, 1);
     const easeOut = 1 - Math.pow(1 - progress, 3);
-    const maxScale = type === "cluster" ? 5.1 : type === "cross" || type === "diagonal" ? 4.2 : 3.45;
+    const maxScale = type === "square" ? 2.6 : 3.45;
     const scale = 0.55 + easeOut * maxScale;
 
     groupRef.current.scale.set(scale, scale, scale);
