@@ -187,16 +187,19 @@ export class GameRoom extends Room<GameState> {
       }
     }
 
-    // Initialize RNG with seed from options, config, or random (dev mode)
-    let seed: number;
-    if (options.devMode) {
-      seed = Math.floor(Math.random() * 2147483647);
-      console.log("Dev mode: using random seed:", seed);
-    } else if (options.seed) {
-      seed = Number(options.seed) || (this.collectibleSpawnConfig.seed ?? Math.floor(Math.random() * 2147483647));
-    } else {
-      seed = this.collectibleSpawnConfig.seed ?? Math.floor(Math.random() * 2147483647);
-    }
+    // Generate a fresh seed for every room unless an explicit seed was supplied.
+    // This prevents solo and multiplayer rooms from silently reusing the
+    // configured fallback seed (currently 40) every time.
+    const requestedSeed =
+      options.seed !== undefined &&
+      options.seed !== null &&
+      options.seed !== ""
+        ? Number(options.seed)
+        : NaN;
+
+    const seed = Number.isFinite(requestedSeed)
+      ? Math.trunc(requestedSeed)
+      : Math.floor(Math.random() * 2147483646) + 1;
     this.rng = new SeededRNG(seed);
     this.enemyRng = new SeededRNG(seed ^ 0x45_4E_45_4D); // separate stream for enemy logic
     console.log("RNG initialized with seed:", seed);
@@ -1416,7 +1419,7 @@ export class GameRoom extends Room<GameState> {
     const colors: PlayerColor[] = ["RED", "GREEN", "BLUE"];
 
     let minesPlaced = 0;
-    let blockedPaintedCell = 0;
+    let blockedMatchingColorLine = 0;
     let blockedOccupied = 0;
 
     const placeMineAt = (x: number, y: number, color: PlayerColor, type: MineType): boolean => {
@@ -1428,8 +1431,9 @@ export class GameRoom extends Room<GameState> {
       }
 
       const paintedCell = this.state.gridColors.get(`${x},${y}`);
-      if (paintedCell?.color) {
-        blockedPaintedCell++;
+      // Mines may overlap another color's trail, but never their own matching-color trail.
+      if (paintedCell?.color === color) {
+        blockedMatchingColorLine++;
         return false;
       }
 
@@ -1458,7 +1462,7 @@ export class GameRoom extends Room<GameState> {
           placedThisMine = placeMineAt(x, y, mineColor, mineType);
         }
 
-        // Fallback scan in case random attempts kept hitting players/collectibles/old mines/painted cells.
+        // Fallback scan in case random attempts kept hitting occupied cells or matching-color trails.
         for (let y = minY; y <= maxY && !placedThisMine; y++) {
           for (let x = minX; x <= maxX && !placedThisMine; x++) {
             placedThisMine = placeMineAt(x, y, mineColor, mineType);
@@ -1470,7 +1474,7 @@ export class GameRoom extends Room<GameState> {
     console.log(
       `Stage ${this.state.stage}: placed ${minesPlaced}/${minesToDrop} colored mines, ` +
       `${minesPerColor} per color, ` +
-      `blocked ${blockedPaintedCell} painted-cell attempts, ` +
+      `blocked ${blockedMatchingColorLine} matching-color line attempts, ` +
       `blocked ${blockedOccupied} occupied attempts, ` +
       `${this.state.mines.length} total mines on board`
     );

@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { getPlayerHex } from "@/constants/playerColors";
@@ -11,6 +11,7 @@ type MineProps = {
   color?: MineColor;
   type?: MineType;
   triggered?: boolean;
+  visible?: boolean;
 };
 
 type MineExplosionProps = {
@@ -178,13 +179,13 @@ function SquareMineBody({ bodyMaterial, rimMaterial, warningMaterial }: {
   );
 }
 
-export function Mine({ position = [0, 0, 0], color = "NEUTRAL", type = "square", triggered = false }: MineProps) {
+export function Mine({ position = [0, 0, 0], color = "NEUTRAL", type = "square", triggered = false, visible = true }: MineProps) {
   const groupRef = useRef<THREE.Group>(null);
   const colorAccent = color === "NEUTRAL" ? "#ef4444" : getPlayerHex(color);
   const typeAccent = TYPE_ACCENTS[type];
   const warningColor = color === "NEUTRAL" ? typeAccent : colorAccent;
-  const opacity = triggered ? 0.35 : 1;
-  const glowScale = triggered ? 0.25 : 1;
+  const opacity = triggered ? 1 : 0.82;
+  const glowScale = triggered ? 2.1 : 0.65;
 
   const bodyMaterial = useMemo(() => new THREE.MeshStandardMaterial({
     color: "#08111f",
@@ -213,17 +214,42 @@ export function Mine({ position = [0, 0, 0], color = "NEUTRAL", type = "square",
     transparent: true,
     opacity,
   }), [warningColor, color, glowScale, opacity]);
+  const activeIndicatorMaterial = useMemo(() => new THREE.MeshBasicMaterial({
+    color: warningColor,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  }), [warningColor]);
+
+  useEffect(() => {
+    return () => {
+      bodyMaterial.dispose();
+      rimMaterial.dispose();
+      warningMaterial.dispose();
+      activeIndicatorMaterial.dispose();
+    };
+  }, [bodyMaterial, rimMaterial, warningMaterial, activeIndicatorMaterial]);
 
   useFrame((state) => {
-    if (!groupRef.current) return;
-
-    // Do not spin mines. Directional mines need to stay fixed so players can read the blast direction.
+    if (!groupRef.current || !visible) return;
+    // Keep the directional silhouette fixed and use a lightweight pulse without dynamic lights.
     groupRef.current.rotation.y = 0;
-    groupRef.current.position.y = position[1] + Math.sin(state.clock.elapsedTime * 2.0) * 0.055;
+    const elapsed = state.clock.elapsedTime;
+    const pulseScale = triggered ? 1 + Math.sin(elapsed * 6) * 0.045 : 1;
+    const bobSpeed = triggered ? 4 : 2;
+    const bobHeight = triggered ? 0.065 : 0.035;
+
+    groupRef.current.scale.setScalar(pulseScale);
+    groupRef.current.position.y = position[1] + Math.sin(elapsed * bobSpeed) * bobHeight;
+    if (triggered) {
+      activeIndicatorMaterial.opacity = 0.68 + (Math.sin(elapsed * 6) + 1) * 0.14;
+    }
   });
 
   return (
-    <group ref={groupRef} position={position}>
+    <group ref={groupRef} position={position} visible={visible}>
       {type === "horizontal" ? (
         <HorizontalMineBody bodyMaterial={bodyMaterial} rimMaterial={rimMaterial} warningMaterial={warningMaterial} />
       ) : type === "vertical" ? (
@@ -232,6 +258,13 @@ export function Mine({ position = [0, 0, 0], color = "NEUTRAL", type = "square",
         <SquareMineBody bodyMaterial={bodyMaterial} rimMaterial={rimMaterial} warningMaterial={warningMaterial} />
       )}
 
+      {triggered && (
+        <>
+          <mesh position={[0, 0.4, 0]} rotation={[Math.PI / 2, 0, 0]} material={activeIndicatorMaterial}>
+            <torusGeometry args={[0.74, 0.05, 8, 32]} />
+          </mesh>
+        </>
+      )}
       {/* Center charge. */}
       <mesh position={[0, 0.28, 0]} material={warningMaterial}>
         <sphereGeometry args={[0.13, 16, 16]} />

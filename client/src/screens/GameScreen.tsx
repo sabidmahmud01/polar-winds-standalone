@@ -629,11 +629,15 @@ export const GameScreen = ({
       : myColor;
   }, [isSpectator, isSoloMode, activePlayerIndex, players, myColor]);
 
-  const visibleMines = useMemo(() => {
-    if (!mineViewerColor) return mines;
-
-    // A player cannot see mines matching their own color.
-    return mines.filter((mine) => mine.color === "NEUTRAL" || mine.color !== mineViewerColor);
+  const minesWithVisibility = useMemo(() => {
+    return mines.map((mine) => ({
+      mine,
+      visible:
+        !mineViewerColor ||
+        mine.triggered ||
+        mine.color === "NEUTRAL" ||
+        mine.color !== mineViewerColor,
+    }));
   }, [mines, mineViewerColor]);
 
   const [mineExplosions, setMineExplosions] = useState<Array<{
@@ -909,19 +913,10 @@ export const GameScreen = ({
         }, 720);
       }
 
-      toast.warning(
-        message?.source === "chain"
-          ? "Chain reaction — another mine detonated!"
-          : "Mine triggered — nearby lines broke!"
-      );
     };
 
     const offGameAbandoned = room.onMessage("gameAbandoned", handleGameAbandoned);
     const offMineTriggered = room.onMessage("mineTriggered", handleMineTriggered);
-    const offMineResolved = room.onMessage("mineResolved", (message?: { color?: PlayerColor; claimedByColor?: PlayerColor; teamRefund?: number }) => {
-      if (!message?.teamRefund) return;
-      toast.success(`${message.claimedByColor ?? "A teammate"} resolved ${message.color ?? "a"} mine: team +${message.teamRefund}`);
-    });
 
 
 
@@ -938,7 +933,6 @@ export const GameScreen = ({
         offAbandonExpired,
         offGameAbandoned,
         offMineTriggered,
-        offMineResolved,
       ].forEach((off) => {
         if (typeof off === "function") off();
       });
@@ -2389,10 +2383,19 @@ export const GameScreen = ({
               return <MineExplosion key={explosion.id} position={pos} type={explosion.type} />;
             })}
 
-            {/* Color-coded mines: hidden from the matching player color */}
-            {visibleMines.map((mine) => {
+            {/* Keep mines mounted and toggle visibility to avoid WebGL stalls when switching solo characters. */}
+            {minesWithVisibility.map(({ mine, visible }) => {
               const pos = getVisualPos(mine.x, mine.y, -2.05);
-              return <Mine key={mine.id} position={pos} color={mine.color} type={mine.type} triggered={mine.triggered} />;
+              return (
+                <Mine
+                  key={mine.id}
+                  position={pos}
+                  color={mine.color}
+                  type={mine.type}
+                  triggered={mine.triggered}
+                  visible={visible}
+                />
+              );
             })}
 
             {/* Players */}
